@@ -14,7 +14,12 @@ pub(crate) fn parse_kind(text: &str) -> anyhow::Result<RuntimeKind> {
         Some(red_core::runtimes::RuntimeKind::Php) => RuntimeKind::Php,
         Some(red_core::runtimes::RuntimeKind::Mysql) => RuntimeKind::Mysql,
         Some(red_core::runtimes::RuntimeKind::Postgres) => RuntimeKind::Postgres,
-        None => bail!("unknown runtime {text:?}; use php, mysql or postgres"),
+        Some(red_core::runtimes::RuntimeKind::Valkey) => RuntimeKind::Valkey,
+        Some(red_core::runtimes::RuntimeKind::Node) => RuntimeKind::Node,
+        Some(red_core::runtimes::RuntimeKind::Composer) => RuntimeKind::Composer,
+        None => {
+            bail!("unknown runtime {text:?}; use php, mysql, postgres, valkey, node or composer")
+        }
     })
 }
 
@@ -23,6 +28,9 @@ fn kind_name(kind: RuntimeKind) -> &'static str {
         RuntimeKind::Php => "php",
         RuntimeKind::Mysql => "mysql",
         RuntimeKind::Postgres => "postgres",
+        RuntimeKind::Valkey => "valkey",
+        RuntimeKind::Node => "node",
+        RuntimeKind::Composer => "composer",
     }
 }
 
@@ -44,7 +52,14 @@ pub(crate) async fn list(ctx: &Ctx<'_>) -> anyhow::Result<()> {
                 "\nAvailable for {} (install with `red runtimes:install <runtime> <line>`):",
                 r.platform
             );
-            for kind in [RuntimeKind::Php, RuntimeKind::Mysql, RuntimeKind::Postgres] {
+            for kind in [
+                RuntimeKind::Php,
+                RuntimeKind::Mysql,
+                RuntimeKind::Postgres,
+                RuntimeKind::Valkey,
+                RuntimeKind::Node,
+                RuntimeKind::Composer,
+            ] {
                 let versions: Vec<String> =
                     r.available
                         .iter()
@@ -81,6 +96,25 @@ pub(crate) async fn list(ctx: &Ctx<'_>) -> anyhow::Result<()> {
 
 /// Install a runtime and wait for it, showing progress.
 pub(crate) async fn install(ctx: &Ctx<'_>, kind: RuntimeKind, version: &str) -> anyhow::Result<()> {
+    install_with(ctx, kind, version, true).await
+}
+
+/// Install a runtime on the way to running something else: progress on
+/// stderr only, nothing on stdout.
+pub(crate) async fn install_quietly(
+    ctx: &Ctx<'_>,
+    kind: RuntimeKind,
+    version: &str,
+) -> anyhow::Result<()> {
+    install_with(ctx, kind, version, false).await
+}
+
+async fn install_with(
+    ctx: &Ctx<'_>,
+    kind: RuntimeKind,
+    version: &str,
+    report: bool,
+) -> anyhow::Result<()> {
     let mut job: RuntimeJob = ctx
         .send(
             Method::POST,
@@ -126,6 +160,9 @@ pub(crate) async fn install(ctx: &Ctx<'_>, kind: RuntimeKind, version: &str) -> 
     if interactive {
         eprintln!();
     }
+    if !report {
+        return Ok(());
+    }
     ctx.output(&job, |job| {
         println!("Installed {} {}.", kind_name(job.kind), job.version);
         match job.kind {
@@ -135,6 +172,12 @@ pub(crate) async fn install(ctx: &Ctx<'_>, kind: RuntimeKind, version: &str) -> 
             ),
             RuntimeKind::Mysql => println!("Add it as a service: `red services:add mysql`."),
             RuntimeKind::Postgres => println!("Add it as a service: `red services:add postgres`."),
+            RuntimeKind::Valkey => println!("Add it as a service: `red services:add valkey`."),
+            RuntimeKind::Node => println!(
+                "Use it in a project with `node = \"{}\"` in red.toml (or .nvmrc), then `red node`/`red npm`.",
+                job.line
+            ),
+            RuntimeKind::Composer => println!("`red composer` uses it now."),
         }
     })
 }
@@ -193,6 +236,7 @@ mod tests {
         job.total = None;
         assert_eq!(progress_text(&job), "downloading 1.0 MB");
         assert!(parse_kind("postgresql").is_ok());
-        assert!(parse_kind("redis").is_err());
+        assert!(matches!(parse_kind("redis"), Ok(RuntimeKind::Valkey)));
+        assert!(parse_kind("mongo").is_err());
     }
 }

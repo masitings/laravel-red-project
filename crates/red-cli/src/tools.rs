@@ -102,18 +102,25 @@ fn php_version(fpm: &Path) -> Option<String> {
     Some(version)
 }
 
-/// The Node.js binary to use in the current directory.
-pub(crate) fn resolve_node() -> anyhow::Result<PathBuf> {
+/// The Node.js version the current project asks for, if any.
+fn wanted_node() -> anyhow::Result<Option<String>> {
     let dir = cwd()?;
-    let wanted = match ProjectConfig::find(&dir)? {
+    Ok(match ProjectConfig::find(&dir)? {
         Some((_, config)) if config.node.is_some() => config.node,
         Some((root, _)) => node_version_file(&root),
         None => dir.ancestors().find_map(node_version_file),
-    };
+    })
+}
+
+/// The installed Node.js matching `wanted` (or the newest), or why none does.
+fn find_node(wanted: Option<&str>) -> Result<PathBuf, String> {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_default();
-    let mut found: Vec<(String, PathBuf)> = red_platform::binaries::node_candidates(&home)
+    let data = red_platform::Paths::discover()
+        .map(|p| p.data_dir)
+        .unwrap_or_default();
+    let mut found: Vec<(String, PathBuf)> = red_platform::binaries::node_candidates(&home, &data)
         .into_iter()
         .filter_map(|node| {
             let output = Command::new(&node).arg("--version").output().ok()?;
@@ -123,26 +130,71 @@ pub(crate) fn resolve_node() -> anyhow::Result<PathBuf> {
         .collect();
     found.sort_by(|(a, _), (b, _)| compare_versions(b, a));
     match wanted {
-        Some(wanted) => {
-            if let Some((_, node)) = found.iter().find(|(v, _)| node_version_matches(v, &wanted)) {
-                return Ok(node.clone());
-            }
-            let installed: Vec<&str> = found.iter().map(|(v, _)| v.as_str()).collect();
-            bail!(
-                "Node.js {wanted} is not installed (found: {}); install it with nvm, fnm or Homebrew",
-                if installed.is_empty() {
-                    "none".to_owned()
-                } else {
-                    installed.join(", ")
-                }
-            )
-        }
+        Some(wanted) => found
+            .iter()
+            .find(|(v, _)| node_version_matches(v, wanted))
+            .map(|(_, node)| node.clone())
+            .ok_or_else(|| {
+                let installed: Vec<&str> = found.iter().map(|(v, _)| v.as_str()).collect();
+                format!(
+                    "Node.js {wanted} is not installed (found: {})",
+                    if installed.is_empty() {
+                        "none".to_owned()
+                    } else {
+                        installed.join(", ")
+                    }
+                )
+            }),
         None => found
             .into_iter()
             .next()
             .map(|(_, node)| node)
-            .context("no Node.js found; install it with nvm, fnm or Homebrew"),
+            .ok_or_else(|| "no Node.js found".to_owned()),
     }
+}
+
+/// The Node.js binary to use in the current directory. When it is missing
+/// and redd runs, RED downloads it.
+pub(crate) async fn resolve_node(ctx: &Ctx<'_>) -> anyhow::Result<PathBuf> {
+    let wanted = wanted_node()?;
+    match find_node(wanted.as_deref()) {
+        Ok(node) => Ok(node),
+        Err(missing) => {
+            if ctx.client.status().await.is_err() {
+                bail!("{missing}; start redd so RED can install it, or use nvm/fnm/Homebrew");
+            }
+            eprintln!("{missing}; installing it with RED.");
+            crate::runtimes::install(
+                ctx,
+                red_api::RuntimeKind::Node,
+                wanted.as_deref().unwrap_or(""),
+            )
+            .await?;
+            find_node(wanted.as_deref()).map_err(anyhow::Error::msg)
+        }
+    }
+}
+
+/// Composer: RED's own copy, else one on `PATH`, else RED downloads it.
+async fn resolve_composer(ctx: &Ctx<'_>) -> anyhow::Result<PathBuf> {
+    let data = red_platform::Paths::discover()?.data_dir;
+    if let Some(composer) = red_platform::binaries::red_composer(&data) {
+        return Ok(composer);
+    }
+    if let Some(composer) = red_platform::binaries::in_path("composer")
+        .into_iter()
+        .chain(red_platform::binaries::in_path("composer.phar"))
+        .next()
+    {
+        return Ok(composer);
+    }
+    ctx.client
+        .status()
+        .await
+        .context("Composer is not installed; start redd so RED can install it")?;
+    eprintln!("Composer is not installed; installing it with RED.");
+    crate::runtimes::install_quietly(ctx, red_api::RuntimeKind::Composer, "").await?;
+    red_platform::binaries::red_composer(&data).context("Composer did not install")
 }
 
 fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
@@ -192,11 +244,7 @@ pub(crate) async fn php(ctx: &Ctx<'_>, args: &[OsString]) -> anyhow::Result<()> 
 
 pub(crate) async fn composer(ctx: &Ctx<'_>, args: &[OsString]) -> anyhow::Result<()> {
     let php = resolve_php(ctx).await?;
-    let composer = red_platform::binaries::in_path("composer")
-        .into_iter()
-        .chain(red_platform::binaries::in_path("composer.phar"))
-        .next()
-        .context("composer was not found on PATH; install it with `brew install composer`")?;
+    let composer = resolve_composer(ctx).await?;
     let mut full = ini_args(&php.binary);
     full.push(composer.into_os_string());
     full.extend_from_slice(args);
@@ -204,8 +252,8 @@ pub(crate) async fn composer(ctx: &Ctx<'_>, args: &[OsString]) -> anyhow::Result
 }
 
 /// `node`, or `npm`/`npx` from the same installation.
-pub(crate) fn node(tool: &str, args: &[OsString]) -> anyhow::Result<()> {
-    let node = resolve_node()?;
+pub(crate) async fn node(ctx: &Ctx<'_>, tool: &str, args: &[OsString]) -> anyhow::Result<()> {
+    let node = resolve_node(ctx).await?;
     let bin = parent(&node);
     let program = if tool == "node" {
         node.clone()
@@ -234,12 +282,21 @@ pub(crate) async fn env(ctx: &Ctx<'_>) -> anyhow::Result<()> {
         }
         Err(err) => notes.push(format!("# PHP: {err}")),
     }
-    match resolve_node() {
+    match wanted_node()
+        .map_err(|e| e.to_string())
+        .and_then(|w| find_node(w.as_deref()))
+    {
         Ok(node) => {
             notes.push(format!("# Node.js: {}", node.display()));
             dirs.push(parent(&node).to_path_buf());
         }
         Err(err) => notes.push(format!("# Node.js: {err}")),
+    }
+    if let Ok(paths) = red_platform::Paths::discover()
+        && let Some(composer) = red_platform::binaries::red_composer(&paths.data_dir)
+    {
+        notes.push(format!("# Composer: {}", composer.display()));
+        dirs.push(parent(&composer).to_path_buf());
     }
     for note in notes {
         println!("{note}");

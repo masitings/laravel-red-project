@@ -8,10 +8,19 @@ export function PhpView() {
       <Versions />
       <Card title="Install PHP">
         <p className="mb-3 text-sm text-stone-500">
-          RED downloads self-contained PHP builds (with the common extensions) from static-php-cli.
-          No Homebrew needed.
+          RED downloads self-contained PHP builds, no Homebrew needed: its own (with pdo_sqlite,
+          pdo_pgsql, intl, redis, imagick and more) and static-php-cli's for versions it has not
+          built yet.
         </p>
         <RuntimeInstaller kinds={["php"]} />
+      </Card>
+      <Card title="Composer and Node.js">
+        <p className="mb-3 text-sm text-stone-500">
+          <code>red composer</code>, <code>red node</code> and <code>red npm</code> use these, and
+          install them on first use. A project picks its Node.js version with <code>node</code> in{" "}
+          <code>red.toml</code> or <code>.nvmrc</code>.
+        </p>
+        <RuntimeInstaller kinds={["composer", "node"]} />
       </Card>
     </div>
   );

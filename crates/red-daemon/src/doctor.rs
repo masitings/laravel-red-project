@@ -80,7 +80,40 @@ fn php(app: &AppState) -> Check {
         );
     }
     let versions: Vec<String> = installs.iter().map(|i| i.full_version.clone()).collect();
-    check("php", "PHP", CheckStatus::Ok, versions.join(", "), None)
+    // Laravel's default database is SQLite; a PHP without pdo_sqlite breaks
+    // a fresh app in a confusing way.
+    let without_sqlite: Vec<String> = installs
+        .iter()
+        .filter(|i| {
+            std::process::Command::new(&i.fpm)
+                .arg("-m")
+                .output()
+                .is_ok_and(|o| {
+                    o.status.success()
+                        && !String::from_utf8_lossy(&o.stdout)
+                            .lines()
+                            .any(|l| l.trim() == "pdo_sqlite")
+                })
+        })
+        .map(|i| i.version.clone())
+        .collect();
+    if without_sqlite.is_empty() {
+        check("php", "PHP", CheckStatus::Ok, versions.join(", "), None)
+    } else {
+        check(
+            "php",
+            "PHP",
+            CheckStatus::Warn,
+            format!(
+                "{}; without pdo_sqlite (Laravel's default database): {}",
+                versions.join(", "),
+                without_sqlite.join(", ")
+            ),
+            Some(
+                "red php:install <version> once RED's own builds are published, or use MySQL/PostgreSQL",
+            ),
+        )
+    }
 }
 
 fn web_ports(app: &AppState) -> Check {

@@ -43,10 +43,10 @@ export function ServicesView() {
       <AddService />
       <Card title="Download a database server">
         <p className="mb-3 text-sm text-stone-500">
-          RED can download MySQL and PostgreSQL itself; they then appear under "Add a service".
-          Redis and Valkey come from Homebrew (<code>brew install valkey</code>).
+          RED downloads MySQL, PostgreSQL and Valkey (a Redis-compatible cache) itself; they then
+          appear under "Add a service".
         </p>
-        <RuntimeInstaller kinds={["mysql", "postgres"]} />
+        <RuntimeInstaller kinds={["mysql", "postgres", "valkey"]} />
       </Card>
     </div>
   );

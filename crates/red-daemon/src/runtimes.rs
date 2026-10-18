@@ -16,8 +16,8 @@ use std::time::{Duration, Instant};
 use futures_util::StreamExt;
 use red_api::{Event, JobState, RuntimeInfo, RuntimeJob, RuntimeRelease};
 use red_core::runtimes::{
-    self, Artifact, Format, Layout, ListingEntry, MARKER_FILE, Marker, Platform, Release,
-    RuntimeKind,
+    self, Artifact, ComposerVersions, Format, Layout, ListingEntry, MARKER_FILE, Manifest, Marker,
+    NodeEntry, Platform, Release, RuntimeKind,
 };
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
@@ -34,8 +34,11 @@ const PROGRESS_EVERY: Duration = Duration::from_millis(400);
 /// What the remote catalogs said, for this platform.
 #[derive(Debug, Clone, Default)]
 struct Catalog {
+    manifest: Manifest,
     php: Vec<ListingEntry>,
     postgres: Vec<String>,
+    node: Vec<NodeEntry>,
+    composer: ComposerVersions,
     errors: Vec<String>,
 }
 
@@ -43,6 +46,8 @@ struct Catalog {
 #[derive(Debug)]
 pub struct RuntimeManager {
     root: PathBuf,
+    /// RED Project's own builds; `None` when turned off in `config.toml`.
+    manifest_url: Option<String>,
     platform: Option<Platform>,
     events: tokio::sync::broadcast::Sender<Event>,
     jobs: Mutex<Vec<RuntimeJob>>,
@@ -56,6 +61,9 @@ pub(crate) fn api_kind(kind: RuntimeKind) -> red_api::RuntimeKind {
         RuntimeKind::Php => red_api::RuntimeKind::Php,
         RuntimeKind::Mysql => red_api::RuntimeKind::Mysql,
         RuntimeKind::Postgres => red_api::RuntimeKind::Postgres,
+        RuntimeKind::Valkey => red_api::RuntimeKind::Valkey,
+        RuntimeKind::Node => red_api::RuntimeKind::Node,
+        RuntimeKind::Composer => red_api::RuntimeKind::Composer,
     }
 }
 
@@ -64,13 +72,26 @@ pub(crate) fn core_kind(kind: red_api::RuntimeKind) -> RuntimeKind {
         red_api::RuntimeKind::Php => RuntimeKind::Php,
         red_api::RuntimeKind::Mysql => RuntimeKind::Mysql,
         red_api::RuntimeKind::Postgres => RuntimeKind::Postgres,
+        red_api::RuntimeKind::Valkey => RuntimeKind::Valkey,
+        red_api::RuntimeKind::Node => RuntimeKind::Node,
+        red_api::RuntimeKind::Composer => RuntimeKind::Composer,
     }
 }
 
 impl RuntimeManager {
-    pub fn new(data_dir: &Path, events: tokio::sync::broadcast::Sender<Event>) -> Self {
+    pub fn new(
+        data_dir: &Path,
+        manifest_url: Option<&str>,
+        events: tokio::sync::broadcast::Sender<Event>,
+    ) -> Self {
+        let manifest_url = match manifest_url {
+            Some("") => None,
+            Some(url) => Some(url.to_owned()),
+            None => Some(runtimes::DEFAULT_MANIFEST_URL.to_owned()),
+        };
         Self {
             root: data_dir.join("runtimes"),
+            manifest_url,
             platform: Platform::current(),
             events,
             jobs: Mutex::new(Vec::new()),
@@ -162,23 +183,36 @@ impl RuntimeManager {
         match self.http() {
             Err(err) => catalog.errors.push(format!("HTTP client: {err}")),
             Ok(http) => {
-                let php = async {
-                    http.get(runtimes::PHP_LISTING_URL)
-                        .send()
-                        .await?
-                        .error_for_status()?
-                        .text()
-                        .await
+                let text = |url: String| {
+                    let http = http.clone();
+                    async move { http.get(url).send().await?.error_for_status()?.text().await }
                 };
-                let pg = async {
-                    http.get(runtimes::pg_metadata_url(platform))
-                        .send()
-                        .await?
-                        .error_for_status()?
-                        .text()
-                        .await
+                let manifest = async {
+                    match &self.manifest_url {
+                        Some(url) => Some(text(url.clone()).await),
+                        None => None,
+                    }
                 };
-                let (php, pg) = tokio::join!(php, pg);
+                let (manifest, php, pg, node, composer) = tokio::join!(
+                    manifest,
+                    text(runtimes::PHP_LISTING_URL.to_owned()),
+                    text(runtimes::pg_metadata_url(platform)),
+                    text(runtimes::NODE_INDEX_URL.to_owned()),
+                    text(runtimes::COMPOSER_VERSIONS_URL.to_owned()),
+                );
+                match manifest {
+                    None => {}
+                    // Not published yet (404) is normal; RED falls back to
+                    // upstream builds.
+                    Some(Err(err)) if err.status().is_some_and(|s| s.as_u16() == 404) => {}
+                    Some(Err(err)) => catalog.errors.push(format!("RED builds: {err}")),
+                    Some(Ok(text)) => match serde_json::from_str::<Manifest>(&text) {
+                        Ok(manifest) => catalog.manifest = manifest,
+                        Err(err) => catalog
+                            .errors
+                            .push(format!("RED builds: bad manifest: {err}")),
+                    },
+                }
                 match php.map(|text| serde_json::from_str::<Vec<ListingEntry>>(&text)) {
                     Ok(Ok(listing)) => catalog.php = listing,
                     Ok(Err(err)) => catalog
@@ -189,6 +223,20 @@ impl RuntimeManager {
                 match pg {
                     Ok(xml) => catalog.postgres = runtimes::parse_maven_versions(&xml),
                     Err(err) => catalog.errors.push(format!("PostgreSQL builds: {err}")),
+                }
+                match node.map(|text| serde_json::from_str::<Vec<NodeEntry>>(&text)) {
+                    Ok(Ok(index)) => catalog.node = index,
+                    Ok(Err(err)) => catalog
+                        .errors
+                        .push(format!("Node.js: unexpected index: {err}")),
+                    Err(err) => catalog.errors.push(format!("Node.js: {err}")),
+                }
+                match composer.map(|text| serde_json::from_str::<ComposerVersions>(&text)) {
+                    Ok(Ok(versions)) => catalog.composer = versions,
+                    Ok(Err(err)) => catalog
+                        .errors
+                        .push(format!("Composer: unexpected versions: {err}")),
+                    Err(err) => catalog.errors.push(format!("Composer: {err}")),
                 }
             }
         }
@@ -204,31 +252,34 @@ impl RuntimeManager {
             return (Vec::new(), catalog.errors);
         };
         let mut releases = Vec::new();
-        for (line, version) in runtimes::php_lines(&catalog.php, platform) {
+        let mut push = |kind: RuntimeKind, line: String, version: String| {
             releases.push(RuntimeRelease {
-                kind: red_api::RuntimeKind::Php,
+                kind: api_kind(kind),
                 line,
                 version,
             });
+        };
+        for (line, version) in runtimes::php_lines_from(&catalog.manifest, &catalog.php, platform) {
+            push(RuntimeKind::Php, line, version);
         }
+        let mut mysql_lines: Vec<String> = Vec::new();
         for release in runtimes::mysql_releases(platform) {
-            if !releases
-                .iter()
-                .any(|r| r.kind == red_api::RuntimeKind::Mysql && r.line == release.line)
-            {
-                releases.push(RuntimeRelease {
-                    kind: red_api::RuntimeKind::Mysql,
-                    line: release.line,
-                    version: release.version,
-                });
+            if !mysql_lines.contains(&release.line) {
+                mysql_lines.push(release.line.clone());
+                push(RuntimeKind::Mysql, release.line, release.version);
             }
         }
         for (line, version) in runtimes::pg_lines(&catalog.postgres) {
-            releases.push(RuntimeRelease {
-                kind: red_api::RuntimeKind::Postgres,
-                line,
-                version,
-            });
+            push(RuntimeKind::Postgres, line, version);
+        }
+        for (line, version) in catalog.manifest.lines(RuntimeKind::Valkey, platform) {
+            push(RuntimeKind::Valkey, line, version);
+        }
+        for (line, version) in runtimes::node_lines(&catalog.node, platform) {
+            push(RuntimeKind::Node, line, version);
+        }
+        if let Some(release) = runtimes::composer_release(&catalog.composer, "") {
+            push(RuntimeKind::Composer, release.line, release.version);
         }
         (releases, catalog.errors)
     }
@@ -239,9 +290,16 @@ impl RuntimeManager {
             .ok_or("RED cannot download runtimes for this platform")?;
         let catalog = self.catalog().await;
         let release = match kind {
-            RuntimeKind::Php => runtimes::php_release(&catalog.php, wanted, platform),
+            RuntimeKind::Php => {
+                runtimes::php_release_from(&catalog.manifest, &catalog.php, wanted, platform)
+            }
             RuntimeKind::Mysql => runtimes::mysql_release(wanted, platform),
             RuntimeKind::Postgres => runtimes::pg_release(&catalog.postgres, wanted, platform),
+            RuntimeKind::Valkey => catalog
+                .manifest
+                .release(RuntimeKind::Valkey, wanted, platform),
+            RuntimeKind::Node => runtimes::node_release(&catalog.node, wanted, platform),
+            RuntimeKind::Composer => runtimes::composer_release(&catalog.composer, wanted),
         };
         release.ok_or_else(|| {
             let mut message = if wanted.is_empty() {
@@ -355,10 +413,11 @@ async fn after_install(app: &AppState, release: &Release) {
             app.php.restart(&release.line).await;
             app.php.discover().await;
         }
-        RuntimeKind::Mysql | RuntimeKind::Postgres => {
+        RuntimeKind::Mysql | RuntimeKind::Postgres | RuntimeKind::Valkey => {
             app.services.discover().await;
             let _ = app.events.send(Event::ServicesChanged);
         }
+        RuntimeKind::Node | RuntimeKind::Composer => {}
     }
 }
 
@@ -473,10 +532,8 @@ async fn download(
                 .await
                 .map_err(|e| e.to_string())?;
             Some(
-                text.split_whitespace()
-                    .next()
-                    .unwrap_or_default()
-                    .to_ascii_lowercase(),
+                runtimes::sha256_from_sums(&text, artifact.sha256_name.as_deref())
+                    .ok_or_else(|| format!("no checksum for {} in {url}", artifact.url))?,
             )
         }
         (None, None) => None,
@@ -528,6 +585,17 @@ fn hex(bytes: &[u8]) -> String {
 pub fn unpack(file: &Path, format: Format, layout: &Layout, dest: &Path) -> Result<(), String> {
     let open = || std::fs::File::open(file).map_err(|e| e.to_string());
     match format {
+        Format::Plain => {
+            let Layout::Single { to } = layout else {
+                return Err("a plain file needs a target path".into());
+            };
+            let target = dest.join(to);
+            if let Some(dir) = target.parent() {
+                std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+            }
+            std::fs::copy(file, &target).map_err(|e| e.to_string())?;
+            set_executable(&target)
+        }
         Format::TarGz => untar(flate2::read::GzDecoder::new(open()?), layout, dest),
         Format::TarXz => untar(
             lzma_rust2::XzReader::new(std::io::BufReader::new(open()?), true),
@@ -622,6 +690,9 @@ fn finish(staging: &Path, release: &Release) -> Result<(), String> {
         }
         RuntimeKind::Mysql => staging.join("bin/mysqld"),
         RuntimeKind::Postgres => staging.join("bin/postgres"),
+        RuntimeKind::Valkey => staging.join("bin/valkey-server"),
+        RuntimeKind::Node => staging.join("bin/node"),
+        RuntimeKind::Composer => staging.join("bin/composer.phar"),
     };
     if !binary.is_file() {
         return Err(format!("{} is missing from the download", binary.display()));
@@ -629,8 +700,27 @@ fn finish(staging: &Path, release: &Release) -> Result<(), String> {
     if cfg!(target_os = "macos") {
         ensure_signed(staging);
     }
-    let output = std::process::Command::new(&binary)
-        .arg(if release.kind == RuntimeKind::Php {
+    // Composer is a PHP archive; running it needs PHP, so only its checksum
+    // is checked. A `composer` script next to it makes it usable from a
+    // shell once `red env` put RED's PHP on PATH.
+    if release.kind == RuntimeKind::Composer {
+        let script = staging.join("bin/composer");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\n# Added by RED Project: runs the composer.phar next to this script.\n\
+             exec php \"$(dirname \"$0\")/composer.phar\" \"$@\"\n",
+        )
+        .map_err(|e| e.to_string())?;
+        set_executable(&script)?;
+    } else {
+        check_runs(&binary, release.kind)?;
+    }
+    write_marker(staging, release)
+}
+
+fn check_runs(binary: &Path, kind: RuntimeKind) -> Result<(), String> {
+    let output = std::process::Command::new(binary)
+        .arg(if kind == RuntimeKind::Php {
             "-v"
         } else {
             "--version"
@@ -652,6 +742,10 @@ fn finish(staging: &Path, release: &Release) -> Result<(), String> {
         }
         return Err(message);
     }
+    Ok(())
+}
+
+fn write_marker(staging: &Path, release: &Release) -> Result<(), String> {
     let marker = Marker {
         kind: release.kind,
         line: release.line.clone(),

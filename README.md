@@ -22,9 +22,11 @@ Park a folder, open `https://my-app.test`. No Docker, no hand-written vhosts.
 
 ## Install
 
-RED can download PHP itself (`red php:install`, or the PHP page in the
-app), and `red setup` installs the newest version when it finds none. PHP
-from Homebrew (`brew install php`) works too.
+RED brings its own PHP, Node.js, Composer, MySQL, PostgreSQL and Valkey:
+`red php:install`, `red node:install`, `red runtimes:install <runtime>`, or
+the PHP and Services pages in the app. `red setup` installs PHP when it
+finds none, and `red composer`/`red node` install themselves on first use.
+Homebrew installations work too, but are not needed.
 
 Download `RED-<version>-macos-<arch>.dmg` from the
 [releases page](https://github.com/masitings/red-project/releases) and drag
@@ -72,14 +74,14 @@ red events                      # watch what the daemon is doing
 ### Databases and caches
 
 RED runs MySQL or MariaDB, PostgreSQL, and Redis or Valkey, each with its
-own data directory, port and log, bound to 127.0.0.1. It can download MySQL
-and PostgreSQL itself, or use what Homebrew installed
-(`brew install mysql postgresql@17 valkey`).
+own data directory, port and log, bound to 127.0.0.1. It downloads MySQL,
+PostgreSQL and Valkey itself, or uses what Homebrew installed.
 
 ```sh
 red runtimes                    # what RED installed and can download
 red runtimes:install postgres 18
 red runtimes:install mysql
+red runtimes:install valkey
 red services:add mysql          # or mariadb, postgres, redis, valkey
 red services:add postgres --name pg15 --server-version 15 --port 5433
 red services                    # status, plus the servers RED found
@@ -132,6 +134,22 @@ RED's CA is restricted (X.509 Name Constraints) to `.test` and
 Supported out of the box: Laravel (and Statamic), Symfony, Craft, Drupal,
 WordPress, Bedrock, any project with `public/index.php`, plain PHP, and
 static sites.
+
+### Where the runtimes come from
+
+| Runtime | Source |
+|---------|--------|
+| PHP | Built by RED's [Runtimes workflow](.github/workflows/runtimes.yml) with static-php-cli; static-php-cli's own builds for versions RED has not built yet |
+| Valkey | Built by RED's Runtimes workflow |
+| PostgreSQL | zonky's relocatable builds on Maven Central (SHA-256 checked) |
+| MySQL | Oracle's official tarballs (checksums pinned in RED) |
+| Node.js | nodejs.org (SHA-256 checked) |
+| Composer | getcomposer.org (SHA-256 checked) |
+
+RED's builds are listed with their checksums in `manifest.json` on the
+[`runtimes` release](https://github.com/masitings/red-project/releases/tag/runtimes).
+Run the Runtimes workflow from the Actions tab to build them (it also runs
+weekly to pick up patch releases).
 
 ## Architecture
 

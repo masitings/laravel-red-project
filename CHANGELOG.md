@@ -7,11 +7,22 @@ All notable changes to RED Project. The format follows
 ## [Unreleased]
 
 ### Runtimes
-- RED downloads and manages PHP, MySQL and PostgreSQL itself, no Homebrew
-  needed: `red php:install [8.4]`, `red runtimes`,
-  `red runtimes:install mysql|postgres [version]`, `red runtimes:remove`.
-  - PHP: self-contained builds from static-php-cli (8.1 to 8.5, common
-    extensions included), each with its own editable `php.ini`.
+- RED downloads and manages PHP, MySQL, PostgreSQL, Valkey, Node.js and
+  Composer itself, no Homebrew needed: `red php:install [8.4]`,
+  `red node:install [22]`, `red runtimes`,
+  `red runtimes:install <runtime> [version]`, `red runtimes:remove`.
+  - PHP and Valkey: built by RED's own CI (the Runtimes workflow, using
+    static-php-cli for PHP) and listed with checksums in a manifest on the
+    `runtimes` release. RED's PHP builds include pdo_sqlite and pdo_pgsql,
+    which static-php-cli's prebuilt binaries lack; those are only used for
+    versions RED has not built yet. Each PHP has its own editable
+    `php.ini`.
+  - Node.js: official builds from nodejs.org (LTS lines and the newest),
+    verified against `SHASUMS256.txt`. `red node`, `red npm` and `red npx`
+    install the project's version on first use.
+  - Composer: the official `composer.phar`, verified against its published
+    checksum; `red composer` installs it on first use, and `red env` puts it
+    on PATH.
   - PostgreSQL 14 to 18: relocatable builds from the zonky project on Maven
     Central, verified against the published SHA-256.
   - MySQL 8.4 LTS: Oracle's official tarballs, verified against checksums
@@ -22,6 +33,9 @@ All notable changes to RED Project. The format follows
 - RED's runtimes are found before Homebrew's; services can use them right
   away, and a runtime that a service uses cannot be removed by accident.
 - `red setup` installs PHP when none is found.
+- `runtimes_manifest` in `config.toml` points RED at another manifest (or
+  `""` turns RED's own builds off).
+- `red doctor` warns about PHP versions without pdo_sqlite.
 - The app's PHP page and Services page can install, update and remove
   runtimes.
 

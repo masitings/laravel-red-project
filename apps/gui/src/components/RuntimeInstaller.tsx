@@ -7,6 +7,9 @@ const label: Record<RuntimeKind, string> = {
   php: "PHP",
   mysql: "MySQL",
   postgres: "PostgreSQL",
+  valkey: "Valkey",
+  node: "Node.js",
+  composer: "Composer",
 };
 
 function progress(job: RuntimeJob): string {

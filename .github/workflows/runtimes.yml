@@ -1,0 +1,149 @@
+name: Runtimes
+
+# Builds RED's own PHP and Valkey runtimes and publishes them, with
+# manifest.json, on the rolling `runtimes` release. RED reads
+# https://github.com/<repo>/releases/download/runtimes/manifest.json.
+
+on:
+  workflow_dispatch:
+    inputs:
+      php_lines:
+        description: PHP lines to build (space separated, empty for none)
+        default: "8.1 8.2 8.3 8.4 8.5"
+      valkey:
+        description: Build the newest Valkey release
+        type: boolean
+        default: true
+  schedule:
+    # Mondays: pick up new PHP and Valkey patch releases.
+    - cron: "17 3 * * 1"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: runtimes
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-24.04
+    outputs:
+      php: ${{ steps.plan.outputs.php }}
+      valkey: ${{ steps.plan.outputs.valkey }}
+    steps:
+      - id: plan
+        env:
+          PHP_LINES: ${{ github.event_name == 'schedule' && '8.1 8.2 8.3 8.4 8.5' || inputs.php_lines }}
+          BUILD_VALKEY: ${{ github.event_name == 'schedule' || inputs.valkey }}
+        run: |
+          php=$(printf '%s\n' $PHP_LINES | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')
+          echo "php=$php" >> "$GITHUB_OUTPUT"
+          if [ "$BUILD_VALKEY" = "true" ]; then
+            tag=$(git ls-remote --tags https://github.com/valkey-io/valkey.git \
+              | grep -oE 'refs/tags/[0-9]+\.[0-9]+\.[0-9]+$' | sed 's#refs/tags/##' | sort -V | tail -1)
+            echo "valkey=$tag" >> "$GITHUB_OUTPUT"
+          else
+            echo "valkey=" >> "$GITHUB_OUTPUT"
+          fi
+
+  php:
+    name: PHP ${{ matrix.line }} (${{ matrix.platform }})
+    needs: plan
+    if: needs.plan.outputs.php != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        line: ${{ fromJSON(needs.plan.outputs.php) }}
+        platform: [macos-aarch64, macos-x86_64, linux-x86_64, linux-aarch64]
+        include:
+          - platform: macos-aarch64
+            runner: macos-15
+          # Intel Mac runner (static-php-cli cannot cross-compile macOS).
+          - platform: macos-x86_64
+            runner: macos-15-intel
+          - platform: linux-x86_64
+            runner: ubuntu-24.04
+          - platform: linux-aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: scripts/runtimes/build-php.sh "${{ matrix.line }}" "${{ matrix.platform }}" out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: php-${{ matrix.line }}-${{ matrix.platform }}
+          path: out/*
+
+  valkey:
+    name: Valkey ${{ needs.plan.outputs.valkey }} (${{ matrix.platform }})
+    needs: plan
+    if: needs.plan.outputs.valkey != ''
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-aarch64
+            runner: macos-15
+          - platform: macos-x86_64
+            runner: macos-15-intel
+          # Older glibc so the binaries run on more distributions.
+          - platform: linux-x86_64
+            runner: ubuntu-22.04
+          - platform: linux-aarch64
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: scripts/runtimes/build-valkey.sh "${{ needs.plan.outputs.valkey }}" "${{ matrix.platform }}" out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: valkey-${{ matrix.platform }}
+          path: out/*
+
+  publish:
+    name: Publish
+    needs: [php, valkey]
+    # Publish whatever built, even when some builds failed.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: runtimes
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: built
+          merge-multiple: true
+      - name: Make sure the release exists
+        run: |
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" \
+            --title "Runtimes" --prerelease \
+            --notes "PHP and Valkey builds used by RED (\`red php:install\`, \`red runtimes:install valkey\`). Updated by the Runtimes workflow; see manifest.json."
+      - name: Merge the manifest
+        run: |
+          shopt -s nullglob
+          entries=(built/*.json)
+          if [ ${#entries[@]} -eq 0 ]; then
+            echo "nothing was built"
+            exit 0
+          fi
+          gh release download "$TAG" --pattern manifest.json --dir . --clobber || true
+          python3 scripts/runtimes/merge-manifest.py manifest.json \
+            "https://github.com/${GITHUB_REPOSITORY}/releases/download/$TAG" "${entries[@]}"
+      - name: Upload
+        run: |
+          shopt -s nullglob
+          archives=(built/*.tar.gz)
+          if [ ${#archives[@]} -eq 0 ]; then exit 0; fi
+          # Archives first, so the manifest never points at a missing file.
+          gh release upload "$TAG" "${archives[@]}" --clobber
+          gh release upload "$TAG" manifest.json --clobber

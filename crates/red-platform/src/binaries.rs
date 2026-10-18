@@ -47,7 +47,7 @@ pub fn server_candidates(server: Server, data_dir: &Path) -> Vec<PathBuf> {
     let own = match server {
         Server::Mysql => Some(("mysql", "bin/mysqld")),
         Server::Postgres => Some(("postgres", "bin/postgres")),
-        Server::Redis => None,
+        Server::Redis => Some(("valkey", "bin/valkey-server")),
     };
     if let Some((kind, binary)) = own {
         for dir in sorted_dirs(&data_dir.join("runtimes").join(kind))
@@ -141,9 +141,16 @@ pub fn php_ini_for(binary: &Path) -> Option<PathBuf> {
     ini.is_file().then_some(ini)
 }
 
-/// Node.js binaries from nvm, fnm, Volta, asdf, mise, Homebrew and `PATH`.
-pub fn node_candidates(home: &Path) -> Vec<PathBuf> {
+/// Node.js binaries from RED's own runtimes, nvm, fnm, Volta, asdf, mise,
+/// Homebrew and `PATH`.
+pub fn node_candidates(home: &Path, data_dir: &Path) -> Vec<PathBuf> {
     let mut found = Vec::new();
+    for dir in sorted_dirs(&data_dir.join("runtimes/node"))
+        .into_iter()
+        .rev()
+    {
+        found.push(dir.join("bin/node"));
+    }
     let managers = [
         (home.join(".nvm/versions/node"), "bin/node"),
         (
@@ -173,6 +180,15 @@ pub fn node_candidates(home: &Path) -> Vec<PathBuf> {
     }
     found.extend(in_path("node"));
     existing_unique(found)
+}
+
+/// Composer installed by RED (`<data>/runtimes/composer/*/bin/composer.phar`).
+pub fn red_composer(data_dir: &Path) -> Option<PathBuf> {
+    sorted_dirs(&data_dir.join("runtimes/composer"))
+        .into_iter()
+        .rev()
+        .map(|dir| dir.join("bin/composer.phar"))
+        .find(|p| p.is_file())
 }
 
 /// Every executable called `name` on `PATH`, in order.
@@ -260,7 +276,7 @@ mod tests {
         for p in [&old, &new, &fnm] {
             touch(p);
         }
-        let found = node_candidates(home.path());
+        let found = node_candidates(home.path(), Path::new("/nonexistent"));
         assert!(found.contains(&old) && found.contains(&new) && found.contains(&fnm));
         let pos = |p: &PathBuf| found.iter().position(|f| f == p).unwrap();
         assert!(pos(&new) < pos(&old), "newest first: {found:?}");

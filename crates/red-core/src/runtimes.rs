@@ -1,6 +1,13 @@
-//! Runtimes RED can download and manage itself: PHP (static builds from
-//! static-php-cli), PostgreSQL (relocatable builds published by the zonky
-//! project on Maven Central) and MySQL (Oracle's official tarballs).
+//! Runtimes RED can download and manage itself:
+//!
+//! * PHP and Valkey built by RED Project's own CI and listed in its runtime
+//!   manifest (a JSON file published with GitHub releases); PHP falls back
+//!   to static-php-cli's prebuilt binaries for versions the manifest lacks.
+//! * PostgreSQL: relocatable builds published by the zonky project on Maven
+//!   Central.
+//! * MySQL: Oracle's official tarballs.
+//! * Node.js: the official builds from nodejs.org.
+//! * Composer: the official `composer.phar` from getcomposer.org.
 //!
 //! This module only decides *what* to download: catalogs, versions and
 //! archive layouts. The daemon fetches, verifies and unpacks.
@@ -18,16 +25,29 @@ pub enum RuntimeKind {
     Php,
     Mysql,
     Postgres,
+    Valkey,
+    Node,
+    Composer,
 }
 
 impl RuntimeKind {
-    pub const ALL: [Self; 3] = [Self::Php, Self::Mysql, Self::Postgres];
+    pub const ALL: [Self; 6] = [
+        Self::Php,
+        Self::Mysql,
+        Self::Postgres,
+        Self::Valkey,
+        Self::Node,
+        Self::Composer,
+    ];
 
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Php => "php",
             Self::Mysql => "mysql",
             Self::Postgres => "postgres",
+            Self::Valkey => "valkey",
+            Self::Node => "node",
+            Self::Composer => "composer",
         }
     }
 
@@ -36,6 +56,9 @@ impl RuntimeKind {
             "php" => Some(Self::Php),
             "mysql" => Some(Self::Mysql),
             "postgres" | "postgresql" | "pgsql" | "pg" => Some(Self::Postgres),
+            "valkey" | "redis" => Some(Self::Valkey),
+            "node" | "nodejs" | "node.js" => Some(Self::Node),
+            "composer" => Some(Self::Composer),
             _ => None,
         }
     }
@@ -109,6 +132,8 @@ pub enum Format {
     TarXz,
     /// A Java archive (zip) holding one `.txz` (tar + xz).
     JarTxz,
+    /// Not an archive: the file itself (used with [`Layout::Single`]).
+    Plain,
 }
 
 /// Where an archive's contents go inside the runtime directory.
@@ -131,6 +156,9 @@ pub struct Artifact {
     pub sha256: Option<String>,
     /// Where to fetch the expected SHA-256 from, when published.
     pub sha256_url: Option<String>,
+    /// For a sums file listing several files (`<hash>  <name>` lines), the
+    /// name to look up.
+    pub sha256_name: Option<String>,
     pub format: Format,
     pub layout: Layout,
 }
@@ -246,6 +274,7 @@ pub fn php_release(listing: &[ListingEntry], wanted: &str, platform: Platform) -
                 url: format!("{PHP_BASE_URL}/{}", file("cli")),
                 sha256: None,
                 sha256_url: None,
+                sha256_name: None,
                 format: Format::TarGz,
                 layout: Layout::Single {
                     to: "bin/php".into(),
@@ -255,6 +284,7 @@ pub fn php_release(listing: &[ListingEntry], wanted: &str, platform: Platform) -
                 url: format!("{PHP_BASE_URL}/{}", file("fpm")),
                 sha256: None,
                 sha256_url: None,
+                sha256_name: None,
                 format: Format::TarGz,
                 layout: Layout::Single {
                     to: "sbin/php-fpm".into(),
@@ -330,6 +360,7 @@ pub fn pg_release(versions: &[String], wanted: &str, platform: Platform) -> Opti
             sha256_url: Some(format!("{url}.sha256")),
             url,
             sha256: None,
+            sha256_name: None,
             format: Format::JarTxz,
             layout: Layout::Flat,
         }],
@@ -380,6 +411,7 @@ pub fn mysql_releases(platform: Platform) -> Vec<Release> {
                 url: format!("{MYSQL_ARCHIVE_URL}/mysql-{}/{file}", minor_line(version)),
                 sha256: Some((*sha256).to_owned()),
                 sha256_url: None,
+                sha256_name: None,
                 format: if file.ends_with(".tar.xz") {
                     Format::TarXz
                 } else {
@@ -398,6 +430,277 @@ pub fn mysql_release(wanted: &str, platform: Platform) -> Option<Release> {
     mysql_releases(platform)
         .into_iter()
         .find(|r| version_matches(&r.version, wanted))
+}
+
+// ---- RED Project's own builds ----------------------------------------------------
+
+/// Where RED Project's CI publishes the list of runtimes it built (PHP,
+/// Valkey). Overridable with `runtimes_manifest` in `config.toml`.
+pub const DEFAULT_MANIFEST_URL: &str =
+    "https://github.com/masitings/red-project/releases/download/runtimes/manifest.json";
+
+/// The runtime manifest published by RED Project's CI.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Manifest {
+    pub schema: u32,
+    #[serde(default)]
+    pub runtimes: Vec<ManifestEntry>,
+}
+
+/// One build in the manifest: a `.tar.gz` whose entries form the runtime
+/// directory (`bin/php`, `sbin/php-fpm`, `bin/valkey-server`, ...).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManifestEntry {
+    pub kind: RuntimeKind,
+    pub line: String,
+    pub version: String,
+    /// `macos-aarch64`, `linux-x86_64`, ...
+    pub platform: String,
+    pub url: String,
+    pub sha256: String,
+}
+
+impl Manifest {
+    fn entries(
+        &self,
+        kind: RuntimeKind,
+        platform: Platform,
+    ) -> impl Iterator<Item = &ManifestEntry> {
+        let name = platform.name();
+        self.runtimes
+            .iter()
+            .filter(move |e| e.kind == kind && e.platform == name && e.sha256.len() == 64)
+    }
+
+    /// Newest build per line for `kind`, newest line first.
+    pub fn lines(&self, kind: RuntimeKind, platform: Platform) -> Vec<(String, String)> {
+        let versions: Vec<String> = self
+            .entries(kind, platform)
+            .map(|e| e.version.clone())
+            .collect();
+        let mut result = lines(&versions, |v| {
+            self.runtimes
+                .iter()
+                .find(|e| e.kind == kind && e.version == v)
+                .map(|e| e.line.clone())
+                .unwrap_or_else(|| minor_line(v))
+        });
+        result.sort_by(|(a, _), (b, _)| compare(b, a));
+        result
+    }
+
+    /// The newest build of `kind` matching `wanted`.
+    pub fn release(&self, kind: RuntimeKind, wanted: &str, platform: Platform) -> Option<Release> {
+        let entry = self
+            .entries(kind, platform)
+            .filter(|e| version_matches(&e.version, wanted) || e.line == wanted.trim())
+            .max_by(|a, b| compare(&a.version, &b.version))?;
+        Some(Release {
+            kind,
+            line: entry.line.clone(),
+            version: entry.version.clone(),
+            artifacts: vec![Artifact {
+                url: entry.url.clone(),
+                sha256: Some(entry.sha256.to_ascii_lowercase()),
+                sha256_url: None,
+                sha256_name: None,
+                format: Format::TarGz,
+                layout: Layout::Flat,
+            }],
+        })
+    }
+}
+
+/// PHP lines from RED's own builds, completed with static-php-cli's for
+/// lines the manifest does not have.
+pub fn php_lines_from(
+    manifest: &Manifest,
+    listing: &[ListingEntry],
+    platform: Platform,
+) -> Vec<(String, String)> {
+    let mut all = manifest.lines(RuntimeKind::Php, platform);
+    for (line, version) in php_lines(listing, platform) {
+        if !all.iter().any(|(l, _)| *l == line) {
+            all.push((line, version));
+        }
+    }
+    all.sort_by(|(a, _), (b, _)| compare(b, a));
+    all
+}
+
+/// The PHP release for `wanted`: RED's own build when the manifest has one,
+/// static-php-cli's otherwise.
+pub fn php_release_from(
+    manifest: &Manifest,
+    listing: &[ListingEntry],
+    wanted: &str,
+    platform: Platform,
+) -> Option<Release> {
+    manifest
+        .release(RuntimeKind::Php, wanted, platform)
+        .or_else(|| php_release(listing, wanted, platform))
+}
+
+// ---- Node.js: nodejs.org ----------------------------------------------------------
+
+/// Every Node.js release, newest first.
+pub const NODE_INDEX_URL: &str = "https://nodejs.org/dist/index.json";
+/// Oldest Node.js major RED offers.
+const NODE_OLDEST: u64 = 20;
+
+/// One entry of `index.json`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct NodeEntry {
+    /// `v22.11.0`
+    pub version: String,
+    /// `false`, or the LTS code name.
+    #[serde(default)]
+    pub lts: serde_json::Value,
+    #[serde(default)]
+    pub files: Vec<String>,
+}
+
+fn node_platform(platform: Platform) -> (&'static str, &'static str) {
+    match (platform.os, platform.arch) {
+        (Os::Macos, Arch::Aarch64) => ("darwin-arm64", "osx-arm64-tar"),
+        (Os::Macos, Arch::X86_64) => ("darwin-x64", "osx-x64-tar"),
+        (Os::Linux, Arch::Aarch64) => ("linux-arm64", "linux-arm64"),
+        (Os::Linux, Arch::X86_64) => ("linux-x64", "linux-x64"),
+    }
+}
+
+/// Versions worth offering: LTS lines and the newest major, from 20 on.
+pub fn node_versions(index: &[NodeEntry], platform: Platform) -> Vec<String> {
+    let (_, file) = node_platform(platform);
+    let newest_major = index
+        .iter()
+        .filter_map(|e| {
+            major_line(e.version.trim_start_matches('v'))
+                .parse::<u64>()
+                .ok()
+        })
+        .max()
+        .unwrap_or(0);
+    index
+        .iter()
+        .filter(|e| e.files.iter().any(|f| f == file))
+        .filter_map(|e| {
+            let version = e.version.trim_start_matches('v').to_owned();
+            let major: u64 = major_line(&version).parse().ok()?;
+            let lts = !matches!(
+                e.lts,
+                serde_json::Value::Bool(false) | serde_json::Value::Null
+            );
+            (major >= NODE_OLDEST && (lts || major == newest_major)).then_some(version)
+        })
+        .collect()
+}
+
+/// Newest Node.js per major, newest first.
+pub fn node_lines(index: &[NodeEntry], platform: Platform) -> Vec<(String, String)> {
+    lines(&node_versions(index, platform), major_line)
+}
+
+/// The Node.js release for `wanted` (`22`, `22.11.0`; empty for the newest LTS).
+pub fn node_release(index: &[NodeEntry], wanted: &str, platform: Platform) -> Option<Release> {
+    let versions = node_versions(index, platform);
+    let wanted = if wanted.trim().is_empty() {
+        // Default to the newest LTS rather than the newest "current" release.
+        let lts: Vec<String> = index
+            .iter()
+            .filter(|e| {
+                !matches!(
+                    e.lts,
+                    serde_json::Value::Bool(false) | serde_json::Value::Null
+                )
+            })
+            .map(|e| e.version.trim_start_matches('v').to_owned())
+            .filter(|v| versions.contains(v))
+            .collect();
+        newest(lts.iter().map(String::as_str), "")
+            .map(major_line)
+            .unwrap_or_default()
+    } else {
+        wanted.trim().trim_start_matches('v').to_owned()
+    };
+    let version = newest(versions.iter().map(String::as_str), &wanted)?.to_owned();
+    let (name, _) = node_platform(platform);
+    let file = format!("node-v{version}-{name}.tar.gz");
+    Some(Release {
+        kind: RuntimeKind::Node,
+        line: major_line(&version),
+        artifacts: vec![Artifact {
+            url: format!("https://nodejs.org/dist/v{version}/{file}"),
+            sha256: None,
+            sha256_url: Some(format!("https://nodejs.org/dist/v{version}/SHASUMS256.txt")),
+            sha256_name: Some(file),
+            format: Format::TarGz,
+            layout: Layout::StripTopDir,
+        }],
+        version,
+    })
+}
+
+// ---- Composer: getcomposer.org ----------------------------------------------------
+
+/// Composer's release channels as JSON.
+pub const COMPOSER_VERSIONS_URL: &str = "https://getcomposer.org/versions";
+
+/// `stable` entries of the versions document.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ComposerVersions {
+    #[serde(default)]
+    pub stable: Vec<ComposerVersion>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ComposerVersion {
+    pub version: String,
+}
+
+/// The newest stable Composer 2.
+pub fn composer_release(versions: &ComposerVersions, wanted: &str) -> Option<Release> {
+    let version = newest(
+        versions
+            .stable
+            .iter()
+            .map(|v| v.version.as_str())
+            .filter(|v| v.starts_with("2.")),
+        wanted,
+    )?
+    .to_owned();
+    let url = format!("https://getcomposer.org/download/{version}/composer.phar");
+    Some(Release {
+        kind: RuntimeKind::Composer,
+        line: major_line(&version),
+        artifacts: vec![Artifact {
+            sha256_url: Some(format!("{url}.sha256sum")),
+            url,
+            sha256: None,
+            sha256_name: None,
+            format: Format::Plain,
+            layout: Layout::Single {
+                to: "bin/composer.phar".into(),
+            },
+        }],
+        version,
+    })
+}
+
+/// Pick the hash for `name` out of a sums file (`<hash>  <name>` per line),
+/// or the first hash when `name` is `None`.
+pub fn sha256_from_sums(text: &str, name: Option<&str>) -> Option<String> {
+    text.lines().find_map(|line| {
+        let mut parts = line.split_whitespace();
+        let hash = parts.next()?;
+        let file = parts.next().map(|f| f.trim_start_matches('*'));
+        let wanted = match name {
+            Some(name) => file == Some(name),
+            None => true,
+        };
+        (wanted && hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()))
+            .then(|| hash.to_ascii_lowercase())
+    })
 }
 
 /// The marker written into every installed runtime directory.
@@ -516,6 +819,111 @@ mod tests {
             arch: Arch::Aarch64,
         };
         assert!(mysql_releases(linux_arm).is_empty());
+    }
+
+    #[test]
+    fn prefers_own_builds_from_the_manifest() {
+        let manifest: Manifest = serde_json::from_str(
+            r#"{"schema":1,"runtimes":[
+              {"kind":"php","line":"8.4","version":"8.4.24","platform":"macos-aarch64",
+               "url":"https://example.test/php-8.4.24-macos-aarch64.tar.gz","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+              {"kind":"valkey","line":"8.1","version":"8.1.4","platform":"macos-aarch64",
+               "url":"https://example.test/valkey.tar.gz","sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+              {"kind":"valkey","line":"8.1","version":"8.1.4","platform":"linux-x86_64",
+               "url":"https://example.test/valkey-linux.tar.gz","sha256":"bad"}
+            ]}"#,
+        )
+        .unwrap();
+        let listing = listing(&[
+            "php-8.3.32-cli-macos-aarch64.tar.gz",
+            "php-8.3.32-fpm-macos-aarch64.tar.gz",
+            "php-8.4.23-cli-macos-aarch64.tar.gz",
+            "php-8.4.23-fpm-macos-aarch64.tar.gz",
+        ]);
+        let lines = php_lines_from(&manifest, &listing, MAC_ARM);
+        assert_eq!(
+            lines,
+            vec![
+                ("8.4".to_owned(), "8.4.24".to_owned()),
+                ("8.3".to_owned(), "8.3.32".to_owned())
+            ]
+        );
+        let own = php_release_from(&manifest, &listing, "8.4", MAC_ARM).unwrap();
+        assert_eq!(own.artifacts[0].layout, Layout::Flat);
+        assert_eq!(own.artifacts[0].sha256.as_deref().map(str::len), Some(64));
+        let fallback = php_release_from(&manifest, &listing, "8.3", MAC_ARM).unwrap();
+        assert!(fallback.artifacts[0].url.contains("static-php"));
+        assert_eq!(
+            manifest
+                .release(RuntimeKind::Valkey, "", MAC_ARM)
+                .unwrap()
+                .version,
+            "8.1.4"
+        );
+        // Entries without a proper checksum are ignored.
+        let linux = Platform {
+            os: Os::Linux,
+            arch: Arch::X86_64,
+        };
+        assert!(manifest.release(RuntimeKind::Valkey, "", linux).is_none());
+    }
+
+    #[test]
+    fn picks_node_lts_lines() {
+        let index: Vec<NodeEntry> = serde_json::from_str(
+            r#"[
+              {"version":"v26.1.0","lts":false,"files":["osx-arm64-tar"]},
+              {"version":"v25.9.0","lts":false,"files":["osx-arm64-tar"]},
+              {"version":"v24.11.0","lts":"Krypton","files":["osx-arm64-tar"]},
+              {"version":"v24.10.0","lts":"Krypton","files":["osx-arm64-tar"]},
+              {"version":"v22.21.0","lts":"Jod","files":["osx-arm64-tar"]},
+              {"version":"v18.20.0","lts":"Hydrogen","files":["osx-arm64-tar"]}
+            ]"#,
+        )
+        .unwrap();
+        let lines = node_lines(&index, MAC_ARM);
+        let majors: Vec<&str> = lines.iter().map(|(l, _)| l.as_str()).collect();
+        assert_eq!(majors, ["26", "24", "22"]);
+        let default = node_release(&index, "", MAC_ARM).unwrap();
+        assert_eq!(default.version, "24.11.0");
+        assert_eq!(
+            default.artifacts[0].url,
+            "https://nodejs.org/dist/v24.11.0/node-v24.11.0-darwin-arm64.tar.gz"
+        );
+        assert_eq!(
+            default.artifacts[0].sha256_name.as_deref(),
+            Some("node-v24.11.0-darwin-arm64.tar.gz")
+        );
+        assert_eq!(
+            node_release(&index, "22", MAC_ARM).unwrap().version,
+            "22.21.0"
+        );
+    }
+
+    #[test]
+    fn picks_composer_and_reads_sums() {
+        let versions: ComposerVersions = serde_json::from_str(
+            r#"{"stable":[{"path":"/download/2.10.3/composer.phar","version":"2.10.3"},
+                          {"path":"/download/2.2.30/composer.phar","version":"2.2.30"}]}"#,
+        )
+        .unwrap();
+        let release = composer_release(&versions, "").unwrap();
+        assert_eq!(release.version, "2.10.3");
+        assert_eq!(release.artifacts[0].format, Format::Plain);
+        let sums = "1111111111111111111111111111111111111111111111111111111111111111  a.tar.gz\n\
+                    2222222222222222222222222222222222222222222222222222222222222222  b.tar.gz\n";
+        assert_eq!(
+            sha256_from_sums(sums, Some("b.tar.gz"))
+                .unwrap()
+                .chars()
+                .next(),
+            Some('2')
+        );
+        assert_eq!(
+            sha256_from_sums(sums, None).unwrap().chars().next(),
+            Some('1')
+        );
+        assert_eq!(sha256_from_sums(sums, Some("c.tar.gz")), None);
     }
 
     #[test]

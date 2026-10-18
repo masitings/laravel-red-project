@@ -55,6 +55,9 @@ pub struct Config {
     pub smtp_port: u16,
     /// Port of the dump server on 127.0.0.1. `0` picks a free port.
     pub dump_port: u16,
+    /// URL of the runtime manifest listing RED's own PHP and Valkey builds.
+    /// Defaults to RED Project's releases; an empty string turns it off.
+    pub runtimes_manifest: Option<String>,
 }
 
 impl Default for Config {
@@ -67,6 +70,7 @@ impl Default for Config {
             helper_socket: None,
             smtp_port: DEFAULT_SMTP_PORT,
             dump_port: DEFAULT_DUMP_PORT,
+            runtimes_manifest: None,
         }
     }
 }

@@ -493,6 +493,9 @@ pub enum RuntimeKind {
     Php,
     Mysql,
     Postgres,
+    Valkey,
+    Node,
+    Composer,
 }
 
 /// A runtime installed by RED.

@@ -200,7 +200,9 @@ fn missing_server(
             ServiceKind::Postgres => {
                 "let RED download it with `red runtimes:install postgres`, or `brew install postgresql@17`"
             }
-            ServiceKind::Redis => "install one, e.g. `brew install valkey` or `brew install redis`",
+            ServiceKind::Redis => {
+                "let RED download Valkey with `red runtimes:install valkey`, or `brew install valkey`"
+            }
         }
         .to_owned()
     } else {

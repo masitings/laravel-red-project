@@ -241,7 +241,11 @@ pub async fn run(paths: Paths, shutdown: impl Future<Output = ()>) -> Result<(),
     let app = Arc::new(AppState {
         php: PhpManager::new(paths.clone(), events.clone()),
         services: services::ServiceManager::new(paths.clone(), events.clone()),
-        runtimes: runtimes::RuntimeManager::new(&paths.data_dir, events.clone()),
+        runtimes: runtimes::RuntimeManager::new(
+            &paths.data_dir,
+            config.runtimes_manifest.as_deref(),
+            events.clone(),
+        ),
         smtp_port: OnceLock::new(),
         dump_port: OnceLock::new(),
         mail: Arc::new(mail::MailStore::open(paths.mail_dir())),

@@ -64,6 +64,12 @@ enum Command {
         #[arg(value_name = "VERSION")]
         php: Option<String>,
     },
+    /// Download and install a Node.js version managed by RED (default: newest LTS).
+    #[command(name = "node:install")]
+    NodeInstall {
+        #[arg(value_name = "VERSION")]
+        node: Option<String>,
+    },
     /// Remove a PHP version installed with `red php:install`.
     #[command(name = "php:uninstall")]
     PhpUninstall {
@@ -72,7 +78,8 @@ enum Command {
     },
     /// List runtimes RED installed and the versions it can download.
     Runtimes,
-    /// Download and install php, mysql or postgres (default: newest version).
+    /// Download and install php, mysql, postgres, valkey, node or composer
+    /// (default: newest version).
     #[command(name = "runtimes:install")]
     RuntimesInstall {
         #[arg(value_name = "RUNTIME")]
@@ -673,6 +680,14 @@ async fn run(cli: &Cli) -> anyhow::Result<()> {
             let line = red_core::php::minor_version(php).unwrap_or_else(|| php.clone());
             runtimes::remove(&ctx, red_api::RuntimeKind::Php, &line).await?
         }
+        Command::NodeInstall { node } => {
+            runtimes::install(
+                &ctx,
+                red_api::RuntimeKind::Node,
+                node.as_deref().unwrap_or(""),
+            )
+            .await?
+        }
         Command::Runtimes => runtimes::list(&ctx).await?,
         Command::RuntimesInstall { kind, line } => {
             runtimes::install(
@@ -717,9 +732,9 @@ async fn run(cli: &Cli) -> anyhow::Result<()> {
         Command::Init => project::init(&ctx).await?,
         Command::Php { args } => tools::php(&ctx, args).await?,
         Command::Composer { args } => tools::composer(&ctx, args).await?,
-        Command::Node { args } => tools::node("node", args)?,
-        Command::Npm { args } => tools::node("npm", args)?,
-        Command::Npx { args } => tools::node("npx", args)?,
+        Command::Node { args } => tools::node(&ctx, "node", args).await?,
+        Command::Npm { args } => tools::node(&ctx, "npm", args).await?,
+        Command::Npx { args } => tools::node(&ctx, "npx", args).await?,
         Command::Env => tools::env(&ctx).await?,
         Command::Mail { mailbox } => inspect::mail_list(&ctx, mailbox.as_deref()).await?,
         Command::MailShow { id } => inspect::mail_show(&ctx, id).await?,
