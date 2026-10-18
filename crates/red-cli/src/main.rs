@@ -5,11 +5,13 @@ use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
 use red_api::client::{Client, ClientError, Method};
 use red_api::{
-    PathRequest, PhpListResponse, PhpVersionRequest, SiteInfo, SiteKind, StatusResponse, endpoints,
+    CheckStatus, DoctorReport, PathRequest, PhpListResponse, PhpVersionRequest, ProxyInfo,
+    ProxyRequest, SiteInfo, SiteKind, StatusResponse, endpoints,
 };
 use red_platform::Paths;
 use serde::Serialize;
 
+mod install;
 mod system;
 
 /// red: local PHP development environment.
@@ -68,7 +70,15 @@ enum Command {
         #[arg(long)]
         site: Option<String>,
     },
-    /// Serve a site over HTTPS (default: the site in the current directory).
+    /// Forward NAME.<tld> to a local dev server (port, host:port or http:// URL).
+    Proxy { name: String, target: String },
+    /// Remove a proxy.
+    Unproxy { name: String },
+    /// List proxies.
+    Proxies,
+    /// Print daemon events as they happen (for debugging).
+    Events,
+    /// Serve a site or proxy over HTTPS (default: the site in the current directory).
     Secure { name: Option<String> },
     /// Serve a site over plain HTTP again.
     Unsecure { name: Option<String> },
@@ -78,6 +88,22 @@ enum Command {
     Trust,
     /// Remove RED's local certificate authority from the trust store.
     Untrust,
+    /// Install the privileged helper that opens ports 80/443 (uses sudo).
+    #[command(name = "helper:install")]
+    HelperInstall,
+    /// Remove the privileged helper (uses sudo).
+    #[command(name = "helper:uninstall")]
+    HelperUninstall,
+    /// Start redd at login, and (re)start it now.
+    #[command(name = "service:install")]
+    ServiceInstall,
+    /// Stop starting redd at login, and stop it.
+    #[command(name = "service:uninstall")]
+    ServiceUninstall,
+    /// Check that everything RED needs is in place.
+    Doctor,
+    /// One-time setup: helper, autostart, DNS and CA trust.
+    Setup,
     /// Point the OS at RED's DNS responder for the local TLD (uses sudo).
     #[command(name = "dns:install")]
     DnsInstall,
@@ -133,6 +159,87 @@ impl Ctx<'_> {
                 cwd.display()
             )
         })
+    }
+
+    /// Install or remove the resolver file: through the helper when it is
+    /// installed, otherwise with sudo.
+    async fn dns(&self, install: bool) -> anyhow::Result<()> {
+        let method = if install {
+            Method::POST
+        } else {
+            Method::DELETE
+        };
+        match self
+            .send::<(), serde_json::Value>(method, endpoints::DNS, None)
+            .await
+        {
+            Ok(_) => {
+                println!(
+                    "{} through red-helper.",
+                    if install {
+                        "DNS installed"
+                    } else {
+                        "DNS removed"
+                    }
+                );
+                Ok(())
+            }
+            Err(ClientError::Api { status: 503, .. }) => {
+                let status = self.client.status().await?;
+                if install {
+                    let port = status
+                        .dns_port
+                        .context("redd's DNS responder is not running; check the redd log")?;
+                    system::install_resolver(&status.tld, port)
+                } else {
+                    system::uninstall_resolver(&status.tld)
+                }
+            }
+            Err(err) => Err(err.into()),
+        }
+    }
+
+    /// Wait until a (re)started redd answers.
+    async fn wait_for_daemon(&self) -> anyhow::Result<()> {
+        for _ in 0..50 {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            if self.client.status().await.is_ok() {
+                return Ok(());
+            }
+        }
+        bail!("redd did not come up; check its log with `red doctor` or the log directory")
+    }
+
+    /// Secure or unsecure a site, or a proxy when no site has that name.
+    /// Returns the name, the new URL and the JSON to print with `--json`.
+    async fn set_secure(
+        &self,
+        name: &Option<String>,
+        on: bool,
+    ) -> anyhow::Result<(String, String, serde_json::Value)> {
+        let name = self.site_name(name).await?;
+        let method = if on { Method::PUT } else { Method::DELETE };
+        match self
+            .send::<(), SiteInfo>(method.clone(), &endpoints::site_secure(&name), None)
+            .await
+        {
+            Ok(site) => Ok((
+                site.name.clone(),
+                site.url.clone(),
+                serde_json::to_value(site)?,
+            )),
+            Err(ClientError::Api { status: 404, .. }) => {
+                let proxy: ProxyInfo = self
+                    .send(method, &endpoints::proxy_secure(&name), None::<&()>)
+                    .await?;
+                Ok((
+                    proxy.name.clone(),
+                    proxy.url.clone(),
+                    serde_json::to_value(proxy)?,
+                ))
+            }
+            Err(err) => Err(err.into()),
+        }
     }
 
     async fn site_name(&self, name: &Option<String>) -> anyhow::Result<String> {
@@ -269,22 +376,60 @@ async fn run(cli: &Cli) -> anyhow::Result<()> {
             })?;
         }
         Command::Secure { name } => {
-            let name = ctx.site_name(name).await?;
-            let site: SiteInfo = ctx
-                .send(Method::PUT, &endpoints::site_secure(&name), None::<&()>)
-                .await?;
-            ctx.output(&site, |site| {
-                println!("{} is now served at {}", site.name, site.url);
-            })?;
+            let (name, url, value) = ctx.set_secure(name, true).await?;
+            ctx.output(&value, |_| println!("{name} is now served at {url}"))?;
         }
         Command::Unsecure { name } => {
-            let name = ctx.site_name(name).await?;
-            let site: SiteInfo = ctx
-                .send(Method::DELETE, &endpoints::site_secure(&name), None::<&()>)
+            let (name, url, value) = ctx.set_secure(name, false).await?;
+            ctx.output(&value, |_| println!("{name} is served at {url} again"))?;
+        }
+        Command::Proxy { name, target } => {
+            let proxy: ProxyInfo = ctx
+                .send(
+                    Method::POST,
+                    endpoints::PROXIES,
+                    Some(&ProxyRequest {
+                        name: name.clone(),
+                        target: target.clone(),
+                    }),
+                )
                 .await?;
-            ctx.output(&site, |site| {
-                println!("{} is served at {} again", site.name, site.url);
+            ctx.output(&proxy, |p| println!("{} → {}", p.url, p.target))?;
+        }
+        Command::Unproxy { name } => {
+            let _: serde_json::Value = ctx
+                .send(Method::DELETE, &endpoints::proxy(name), None::<&()>)
+                .await?;
+            ctx.output(&serde_json::json!({ "removed": name }), |_| {
+                println!("Removed proxy {name}.");
             })?;
+        }
+        Command::Proxies => {
+            let proxies: Vec<ProxyInfo> = ctx.client.get(endpoints::PROXIES).await?;
+            ctx.output(&proxies, |proxies| {
+                if proxies.is_empty() {
+                    println!("No proxies. Add one with `red proxy <name> <port>`.");
+                    return;
+                }
+                let rows: Vec<[String; 2]> = proxies
+                    .iter()
+                    .map(|p| [p.url.clone(), p.target.clone()])
+                    .collect();
+                print_table(&["URL", "TARGET"], &rows);
+            })?;
+        }
+        Command::Events => {
+            let json = cli.json;
+            ctx.client
+                .events(|event| {
+                    if json {
+                        println!("{}", serde_json::to_string(&event).unwrap_or_default());
+                    } else {
+                        println!("{event:?}");
+                    }
+                    true
+                })
+                .await?;
         }
         Command::Secured => {
             let sites: Vec<SiteInfo> = ctx.client.get(endpoints::SITES).await?;
@@ -315,16 +460,39 @@ async fn run(cli: &Cli) -> anyhow::Result<()> {
             let status = ctx.client.status().await?;
             system::untrust(Path::new(&status.paths.ca_cert))?;
         }
-        Command::DnsInstall => {
-            let status = ctx.client.status().await?;
-            let port = status
-                .dns_port
-                .context("redd's DNS responder is not running; check the redd log")?;
-            system::install_resolver(&status.tld, port)?;
+        Command::DnsInstall => ctx.dns(true).await?,
+        Command::DnsUninstall => ctx.dns(false).await?,
+        Command::HelperInstall => {
+            install::install_helper(red_platform::user::current_uid())?;
         }
-        Command::DnsUninstall => {
+        Command::HelperUninstall => install::uninstall_helper()?,
+        Command::ServiceInstall => {
+            install::install_agent(&paths.log_dir)?;
+            ctx.wait_for_daemon().await?;
+        }
+        Command::ServiceUninstall => install::uninstall_agent()?,
+        Command::Doctor => {
+            let report: DoctorReport = ctx.client.get(endpoints::DOCTOR).await?;
+            ctx.output(&report, print_doctor)?;
+            if report.checks.iter().any(|c| c.status == CheckStatus::Fail) {
+                std::process::exit(1);
+            }
+        }
+        Command::Setup => {
+            println!("Setting up RED. You may be asked for your password a few times.\n");
+            println!("1/4  Privileged helper (ports 80 and 443)");
+            install::install_helper(red_platform::user::current_uid())?;
+            println!("\n2/4  Start redd at login");
+            install::install_agent(&paths.log_dir)?;
+            ctx.wait_for_daemon().await?;
+            println!("\n3/4  DNS for .test");
+            ctx.dns(true).await?;
+            println!("\n4/4  Trust the local certificate authority");
             let status = ctx.client.status().await?;
-            system::uninstall_resolver(&status.tld)?;
+            system::trust(Path::new(&status.paths.ca_cert))?;
+            println!();
+            let report: DoctorReport = ctx.client.get(endpoints::DOCTOR).await?;
+            print_doctor(&report);
         }
         Command::Unisolate { site } => {
             let name = ctx.site_name(site).await?;
@@ -407,6 +575,22 @@ fn print_status(status: &StatusResponse) {
     println!("data     {}", status.paths.data_dir);
     println!("socket   {}", status.paths.socket);
     println!("ca       {}", status.paths.ca_cert);
+}
+
+fn print_doctor(report: &DoctorReport) {
+    for check in &report.checks {
+        let mark = match check.status {
+            CheckStatus::Ok => " ok ",
+            CheckStatus::Warn => "warn",
+            CheckStatus::Fail => "FAIL",
+        };
+        println!("[{mark}] {:<18} {}", check.label, check.detail);
+        if check.status != CheckStatus::Ok
+            && let Some(fix) = &check.fix
+        {
+            println!("       {:<18} fix: {fix}", "");
+        }
+    }
 }
 
 fn red_core_date(unix: u64) -> String {

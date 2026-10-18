@@ -30,6 +30,14 @@ pub mod endpoints {
     pub const PHP: &str = "/v1/php";
     /// `PUT`: change the default PHP version.
     pub const PHP_DEFAULT: &str = "/v1/php/default";
+    /// `GET`: health checks, see [`crate::DoctorReport`].
+    pub const DOCTOR: &str = "/v1/doctor";
+    /// `POST`: install the resolver file through the helper. `DELETE`: remove it.
+    pub const DNS: &str = "/v1/dns";
+    /// `GET`: Server-Sent Events stream of [`crate::Event`].
+    pub const EVENTS: &str = "/v1/events";
+    /// `GET`: proxies. `POST`: add one. `DELETE /v1/proxies/{name}`: remove.
+    pub const PROXIES: &str = "/v1/proxies";
 
     /// `/v1/sites/{name}`
     pub fn site(name: &str) -> String {
@@ -44,6 +52,16 @@ pub mod endpoints {
     /// `/v1/sites/{name}/secure`: `PUT` secures, `DELETE` unsecures.
     pub fn site_secure(name: &str) -> String {
         format!("{SITES}/{name}/secure")
+    }
+
+    /// `/v1/proxies/{name}`
+    pub fn proxy(name: &str) -> String {
+        format!("{PROXIES}/{name}")
+    }
+
+    /// `/v1/proxies/{name}/secure`: `PUT` secures, `DELETE` unsecures.
+    pub fn proxy_secure(name: &str) -> String {
+        format!("{PROXIES}/{name}/secure")
     }
 
     /// `/v1/links/{name}`

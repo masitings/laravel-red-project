@@ -1,62 +1,54 @@
+import { useState } from "react";
 import { RedApiError } from "./api/client";
-import type { StatusResponse } from "./api/gen/StatusResponse";
-import { useStatus } from "./api/status";
+import { useDaemonEvents } from "./api/events";
+import { useStatus } from "./api/queries";
+import { PhpView } from "./views/PhpView";
+import { SitesView } from "./views/SitesView";
+import { StatusView } from "./views/StatusView";
+
+export { formatUptime } from "./views/StatusView";
+
+const tabs = ["Sites", "PHP", "Status"] as const;
+type Tab = (typeof tabs)[number];
 
 export function App() {
+  const [tab, setTab] = useState<Tab>("Sites");
+  const status = useStatus();
+  useDaemonEvents();
+
   return (
-    <div className="min-h-screen bg-stone-50 text-stone-900 dark:bg-stone-950 dark:text-stone-100">
-      <header className="flex items-center gap-3 border-b border-stone-200 px-6 py-4 dark:border-stone-800">
-        <span className="grid size-8 place-items-center rounded-lg bg-red-600 text-sm font-bold text-white">
-          R
-        </span>
-        <h1 className="text-lg font-semibold">RED</h1>
-      </header>
-      <main className="mx-auto max-w-2xl p-6">
-        <DaemonStatus />
+    <div className="flex min-h-screen bg-stone-50 text-stone-900 dark:bg-stone-950 dark:text-stone-100">
+      <nav className="flex w-44 shrink-0 flex-col gap-1 border-r border-stone-200 p-3 dark:border-stone-800">
+        <div className="mb-4 flex items-center gap-2 px-2">
+          <span className="grid size-7 place-items-center rounded-lg bg-red-600 text-xs font-bold text-white">
+            R
+          </span>
+          <span className="font-semibold">RED</span>
+        </div>
+        {tabs.map((name) => (
+          <button
+            key={name}
+            type="button"
+            onClick={() => setTab(name)}
+            aria-current={tab === name ? "page" : undefined}
+            className={`rounded-md px-2 py-1.5 text-left text-sm ${
+              tab === name
+                ? "bg-stone-200 font-medium dark:bg-stone-800"
+                : "text-stone-600 hover:bg-stone-100 dark:text-stone-400 dark:hover:bg-stone-900"
+            }`}
+          >
+            {name}
+          </button>
+        ))}
+      </nav>
+      <main className="min-w-0 flex-1 p-6">
+        {status.isPending && <p className="text-stone-500">Connecting to redd…</p>}
+        {status.error && <Offline error={status.error} />}
+        {status.data && tab === "Sites" && <SitesView />}
+        {status.data && tab === "PHP" && <PhpView />}
+        {status.data && tab === "Status" && <StatusView status={status.data} />}
       </main>
     </div>
-  );
-}
-
-function DaemonStatus() {
-  const { data, error, isPending } = useStatus();
-
-  if (isPending) {
-    return <p className="text-stone-500">Connecting to redd…</p>;
-  }
-  if (error) {
-    return <Offline error={error} />;
-  }
-  return <Online status={data} />;
-}
-
-function Online({ status }: { status: StatusResponse }) {
-  const rows: [string, string][] = [
-    ["Version", `${status.version} (API v${status.api_version}, ${status.os})`],
-    ["Uptime", formatUptime(status.uptime_secs)],
-    ["TLD", `.${status.tld}`],
-    ["HTTP", address("http", status.http_port, 80, status.tld)],
-    ["HTTPS", address("https", status.https_port, 443, status.tld)],
-    ["Config", status.paths.config_dir],
-    ["Data", status.paths.data_dir],
-    ["Socket", status.paths.socket],
-  ];
-  return (
-    <section className="rounded-xl border border-stone-200 bg-white p-5 dark:border-stone-800 dark:bg-stone-900">
-      <h2 className="mb-4 flex items-center gap-2 font-medium">
-        <span className="size-2.5 rounded-full bg-emerald-500" aria-hidden />
-        redd is running
-        <span className="text-sm font-normal text-stone-500">pid {status.pid}</span>
-      </h2>
-      <dl className="grid grid-cols-[6rem_1fr] gap-x-4 gap-y-2 text-sm">
-        {rows.map(([label, value]) => (
-          <div key={label} className="contents">
-            <dt className="text-stone-500">{label}</dt>
-            <dd className="break-all font-mono">{value}</dd>
-          </div>
-        ))}
-      </dl>
-    </section>
   );
 }
 
@@ -65,7 +57,7 @@ function Offline({ error }: { error: Error }) {
   return (
     <section
       role="alert"
-      className="rounded-xl border border-amber-300 bg-amber-50 p-5 dark:border-amber-800 dark:bg-amber-950"
+      className="max-w-xl rounded-xl border border-amber-300 bg-amber-50 p-5 dark:border-amber-800 dark:bg-amber-950"
     >
       <h2 className="mb-2 flex items-center gap-2 font-medium">
         <span className="size-2.5 rounded-full bg-amber-500" aria-hidden />
@@ -73,17 +65,9 @@ function Offline({ error }: { error: Error }) {
       </h2>
       <p className="text-sm">{error.message}</p>
       {hint && <p className="mt-2 text-sm text-stone-600 dark:text-stone-400">{hint}</p>}
+      <p className="mt-2 text-sm text-stone-600 dark:text-stone-400">
+        To start it automatically at login, run <code>red setup</code> once.
+      </p>
     </section>
   );
-}
-
-function address(scheme: string, port: number | null, standard: number, tld: string): string {
-  if (port === null) return "not running";
-  return `${scheme}://*.${tld}${port === standard ? "" : `:${port}`}`;
-}
-
-export function formatUptime(secs: number): string {
-  if (secs < 60) return `${secs}s`;
-  if (secs < 3600) return `${Math.floor(secs / 60)}m ${secs % 60}s`;
-  return `${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m`;
 }

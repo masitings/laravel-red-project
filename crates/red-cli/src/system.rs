@@ -12,7 +12,7 @@ use anyhow::{Context, bail};
 /// Marker written into files RED creates outside its own directories.
 const MARKER: &str = "# Added by RED Project.";
 
-fn run(program: &str, args: &[&str]) -> anyhow::Result<()> {
+pub(crate) fn run(program: &str, args: &[&str]) -> anyhow::Result<()> {
     let status = Command::new(program)
         .args(args)
         .status()

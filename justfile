@@ -40,3 +40,10 @@ check-rust:
 
 check-gui:
     cd {{gui}} && pnpm lint && pnpm typecheck && pnpm test
+
+# Build release binaries and install red, redd and red-helper into PREFIX/bin
+install prefix=(env_var("HOME") + "/.local"):
+    cargo build --release -p red-cli -p red-daemon -p red-helper
+    mkdir -p {{prefix}}/bin
+    install -m 0755 target/release/red target/release/redd target/release/red-helper {{prefix}}/bin/
+    @echo "Installed to {{prefix}}/bin. Run 'red setup' next."

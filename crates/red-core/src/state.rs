@@ -23,6 +23,8 @@ pub struct State {
     pub default_php: Option<String>,
     /// Sites served over HTTPS, with their certificate's expiry (Unix time).
     pub secured: BTreeMap<String, u64>,
+    /// Names proxied to a local URL, e.g. `app` → `http://127.0.0.1:5173`.
+    pub proxies: BTreeMap<String, String>,
 }
 
 /// Errors produced while reading or writing the state file.

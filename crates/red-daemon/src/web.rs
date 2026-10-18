@@ -8,18 +8,21 @@ use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use http_body_util::{BodyExt, Full, Limited};
+use http_body_util::{BodyExt, Limited};
 use hyper::body::{Bytes, Incoming};
 use hyper::header::{self, HeaderValue};
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use red_core::driver::{self, Action, PhpScript};
+use red_core::sites::Target;
 use red_core::{Site, sites};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
 use crate::AppState;
+use crate::body::{self, Body};
 use crate::fastcgi::{self, FcgiError};
+use crate::proxy;
 
 /// How a request reached us.
 #[derive(Debug, Clone, Copy)]
@@ -35,8 +38,6 @@ const TLS_HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 
 /// Largest request body passed to PHP (uploads included).
 const MAX_BODY: usize = 512 * 1024 * 1024;
-
-type Body = Full<Bytes>;
 
 /// Bind the web server on loopback. Binds `127.0.0.1:port` and, when
 /// available, `[::1]` on the same port. Returns the listeners and the port
@@ -145,7 +146,7 @@ async fn accept_loop(
 async fn handle(req: Request<Incoming>, app: Arc<AppState>, conn: Conn) -> Response<Body> {
     let host = host_of(&req).unwrap_or_default();
     let state = app.state_snapshot();
-    let Some(site) = sites::resolve_host(&state, &host, &app.config.tld) else {
+    let Some(target) = sites::resolve_target(&state, &host, &app.config.tld) else {
         return page(
             StatusCode::NOT_FOUND,
             "No site here",
@@ -158,7 +159,7 @@ async fn handle(req: Request<Incoming>, app: Arc<AppState>, conn: Conn) -> Respo
     };
 
     if !conn.secure
-        && state.secured.contains_key(&site.name)
+        && state.secured.contains_key(target.name())
         && let Some(https_port) = app.https_port.get()
     {
         let authority = host.rsplit_once(':').map_or(host.as_str(), |(h, _)| h);
@@ -170,6 +171,29 @@ async fn handle(req: Request<Incoming>, app: Arc<AppState>, conn: Conn) -> Respo
         let path = req.uri().path_and_query().map_or("/", |pq| pq.as_str());
         return redirect(&format!("https://{authority}{port}{path}"));
     }
+
+    let site = match target {
+        Target::Site(site) => site,
+        Target::Proxy { name, url } => {
+            return match proxy::forward(req, &url, conn).await {
+                Ok(response) => response,
+                Err(err) => {
+                    tracing::debug!(proxy = %name, %err, "proxy failed");
+                    page(
+                        StatusCode::BAD_GATEWAY,
+                        "Proxy target not reachable",
+                        &format!(
+                            "<code>{}</code> forwards to <code>{}</code>, but: {}. \
+                             Is your dev server running?",
+                            escape(&name),
+                            escape(&url),
+                            escape(&err.to_string())
+                        ),
+                    )
+                }
+            };
+        }
+    };
 
     let driver = driver::detect(&site.path);
     let action = driver.resolve(&site.path, req.uri().path());
@@ -220,8 +244,9 @@ async fn serve_file(method: &Method, path: &std::path::Path) -> Response<Body> {
             "Static files only accept GET and HEAD.",
         );
     }
-    match tokio::fs::read(path).await {
-        Ok(bytes) => {
+    match tokio::fs::File::open(path).await {
+        Ok(file) => {
+            let len = file.metadata().await.map(|m| m.len()).ok();
             let mime = mime_guess::from_path(path).first_or_octet_stream();
             let content_type = if mime.type_() == mime_guess::mime::TEXT
                 || mime.subtype() == mime_guess::mime::JAVASCRIPT
@@ -231,9 +256,14 @@ async fn serve_file(method: &Method, path: &std::path::Path) -> Response<Body> {
             } else {
                 mime.to_string()
             };
-            let mut response = Response::new(Body::new(Bytes::from(bytes)));
+            let mut response = Response::new(body::file(file));
             if let Ok(value) = HeaderValue::from_str(&content_type) {
                 response.headers_mut().insert(header::CONTENT_TYPE, value);
+            }
+            if let Some(len) = len {
+                response
+                    .headers_mut()
+                    .insert(header::CONTENT_LENGTH, HeaderValue::from(len));
             }
             response
         }
@@ -282,7 +312,8 @@ async fn run_php(
                 );
             }
         };
-        match fastcgi::request(&socket, &params, &body).await {
+        let label = format!("{} {}", site.name, parts.uri.path());
+        match fastcgi::request(&socket, &params, &body, label).await {
             Ok(response) => {
                 if !response.stderr.is_empty() {
                     tracing::warn!(site = %site.name, stderr = %response.stderr.trim_end(), "PHP stderr");
@@ -400,7 +431,7 @@ fn cgi_params(
 }
 
 fn php_response(fcgi: fastcgi::FcgiResponse) -> Response<Body> {
-    let mut response = Response::new(Body::new(fcgi.body));
+    let mut response = Response::new(fcgi.body);
     *response.status_mut() = StatusCode::from_u16(fcgi.status).unwrap_or(StatusCode::OK);
     let headers = response.headers_mut();
     for (name, value) in fcgi.headers {
@@ -423,7 +454,7 @@ fn php_response(fcgi: fastcgi::FcgiResponse) -> Response<Body> {
 
 /// A permanent redirect to `location`.
 fn redirect(location: &str) -> Response<Body> {
-    let mut response = Response::new(Body::default());
+    let mut response = Response::new(body::empty());
     *response.status_mut() = StatusCode::MOVED_PERMANENTLY;
     if let Ok(value) = HeaderValue::from_str(location) {
         response.headers_mut().insert(header::LOCATION, value);
@@ -441,7 +472,7 @@ fn page(status: StatusCode, title: &str, detail_html: &str) -> Response<Body> {
          <small>{code} · RED</small></body></html>",
         code = status.as_u16(),
     );
-    let mut response = Response::new(Body::new(Bytes::from(html)));
+    let mut response = Response::new(body::full(html));
     *response.status_mut() = status;
     response.headers_mut().insert(
         header::CONTENT_TYPE,

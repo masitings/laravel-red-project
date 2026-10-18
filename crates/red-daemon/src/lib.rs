@@ -6,9 +6,12 @@
 //! M1); without it RED falls back to unprivileged ports.
 
 pub mod api;
+pub mod body;
 pub mod dns;
+pub mod doctor;
 pub mod fastcgi;
 pub mod fpm;
+pub mod proxy;
 pub mod socket;
 pub mod tls;
 pub mod web;
@@ -71,10 +74,22 @@ pub struct AppState {
     pub http_port: OnceLock<u16>,
     pub https_port: OnceLock<u16>,
     pub dns_port: OnceLock<u16>,
+    /// `true` when the web ports came from the privileged helper.
+    pub via_helper: std::sync::atomic::AtomicBool,
+    /// Where the helper listens.
+    pub helper_socket: std::path::PathBuf,
+    /// Change notifications for `GET /v1/events` subscribers.
+    pub events: tokio::sync::broadcast::Sender<red_api::Event>,
     state: RwLock<State>,
 }
 
 impl AppState {
+    /// Tell event subscribers that something changed. Having no
+    /// subscribers is fine.
+    pub fn notify(&self, event: red_api::Event) {
+        let _ = self.events.send(event);
+    }
+
     /// A copy of the current state.
     pub fn state_snapshot(&self) -> State {
         self.state.read().expect("state lock poisoned").clone()
@@ -147,12 +162,18 @@ pub async fn run(paths: Paths, shutdown: impl Future<Output = ()>) -> Result<(),
     let https_port = port_setting(RED_HTTPS_PORT_ENV, config.https_port)?;
     let dns_port = port_setting(RED_DNS_PORT_ENV, config.dns_port)?;
 
+    let helper_socket = std::env::var_os(red_helper::RED_HELPER_SOCKET_ENV)
+        .map(std::path::PathBuf::from)
+        .or_else(|| config.helper_socket.clone());
+
     let socket_path = paths.socket();
     let listener = socket::bind(&socket_path).await?;
     let authority = tls::Authority::load_or_create(&paths.data_dir.join("certs"), &config.tld)?;
 
+    let (events, _) = tokio::sync::broadcast::channel(64);
     let app = Arc::new(AppState {
-        php: PhpManager::new(paths.clone()),
+        php: PhpManager::new(paths.clone(), events.clone()),
+        events,
         tls: authority,
         paths,
         config,
@@ -160,6 +181,10 @@ pub async fn run(paths: Paths, shutdown: impl Future<Output = ()>) -> Result<(),
         http_port: OnceLock::new(),
         https_port: OnceLock::new(),
         dns_port: OnceLock::new(),
+        via_helper: std::sync::atomic::AtomicBool::new(false),
+        helper_socket: helper_socket
+            .clone()
+            .unwrap_or_else(red_helper::default_socket),
         state: RwLock::new(state),
     });
     renew_certificates(&app);
@@ -185,7 +210,31 @@ pub async fn run(paths: Paths, shutdown: impl Future<Output = ()>) -> Result<(),
         Err(err) => tracing::error!(%err, port = dns_port, "DNS responder disabled"),
     }
 
-    if let Some((listeners, port)) = bind_web(https_port, FALLBACK_HTTPS_PORT, "HTTPS").await {
+    // Privileged ports come from the helper when we are not root, or
+    // whenever a helper socket is configured explicitly.
+    let mut from_helper = None;
+    if helper_socket.is_some()
+        || (!red_platform::user::is_root() && (http_port < 1024 || https_port < 1024))
+    {
+        match red_helper::client::open_web_ports(&app.helper_socket).await {
+            Ok(listeners) => {
+                tracing::info!("received web ports from red-helper");
+                app.via_helper
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                from_helper = Some(listeners);
+            }
+            Err(err) => tracing::info!(%err, "red-helper not available; using fallback ports"),
+        }
+    }
+    let (https_listeners, http_listeners) = match from_helper {
+        Some(listeners) => (adopt(listeners.https), adopt(listeners.http)),
+        None => (
+            bind_web(https_port, FALLBACK_HTTPS_PORT, "HTTPS").await,
+            bind_web(http_port, FALLBACK_HTTP_PORT, "HTTP").await,
+        ),
+    };
+
+    if let Some((listeners, port)) = https_listeners {
         let config = tls::server_config(app.clone())?;
         let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
         let _ = app.https_port.set(port);
@@ -198,7 +247,7 @@ pub async fn run(paths: Paths, shutdown: impl Future<Output = ()>) -> Result<(),
         )));
     }
 
-    if let Some((listeners, port)) = bind_web(http_port, FALLBACK_HTTP_PORT, "HTTP").await {
+    if let Some((listeners, port)) = http_listeners {
         let _ = app.http_port.set(port);
         tracing::info!(port, "serving sites over HTTP");
         tasks.push(tokio::spawn(web::serve(
@@ -223,6 +272,24 @@ pub async fn run(paths: Paths, shutdown: impl Future<Output = ()>) -> Result<(),
     }
     tracing::info!("redd stopped");
     result
+}
+
+/// Turn listeners received from the helper into tokio listeners.
+fn adopt(listeners: Vec<std::net::TcpListener>) -> Option<(Vec<tokio::net::TcpListener>, u16)> {
+    let mut adopted = Vec::new();
+    let mut port = None;
+    for listener in listeners {
+        match tokio::net::TcpListener::from_std(listener) {
+            Ok(listener) => {
+                if port.is_none() {
+                    port = listener.local_addr().ok().map(|a| a.port());
+                }
+                adopted.push(listener);
+            }
+            Err(err) => tracing::warn!(%err, "unusable listener from red-helper"),
+        }
+    }
+    Some((adopted, port?))
 }
 
 /// Reissue certificates of secured sites that expire soon.

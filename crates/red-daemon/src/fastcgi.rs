@@ -1,14 +1,17 @@
 //! Minimal FastCGI client (responder role), enough to talk to PHP-FPM.
 //!
 //! One request per connection (`FCGI_KEEP_CONN` unset), with the request
-//! body sent up front and the whole response read before returning.
+//! body sent up front. The response headers are read before returning; the
+//! body is streamed afterwards as PHP produces it.
 //! Specification: <https://fastcgi-archives.github.io/FastCGI_Specification.html>.
 
 use std::path::Path;
 
-use hyper::body::Bytes;
+use hyper::body::{Bytes, Frame};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
+
+use crate::body::{self, Body, BoxError};
 
 const VERSION: u8 = 1;
 const BEGIN_REQUEST: u8 = 1;
@@ -20,6 +23,8 @@ const STDERR: u8 = 7;
 const RESPONDER: u16 = 1;
 const REQUEST_ID: u16 = 1;
 const MAX_CONTENT: usize = 0xffff;
+/// Give up if PHP sends this much without finishing its headers.
+const MAX_HEADER_BYTES: usize = 1024 * 1024;
 
 /// Errors talking to a FastCGI server.
 #[derive(Debug, thiserror::Error)]
@@ -40,21 +45,53 @@ pub enum FcgiError {
 /// Response headers in the order the script sent them.
 pub type Headers = Vec<(String, String)>;
 
-/// A parsed CGI response.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A CGI response whose body is still streaming.
+#[derive(Debug)]
 pub struct FcgiResponse {
     pub status: u16,
     pub headers: Headers,
-    pub body: Bytes,
-    /// Anything the script wrote to stderr (PHP warnings, notices).
+    pub body: Body,
+    /// What the script wrote to stderr before its headers were complete.
+    /// Later stderr output is logged as it arrives.
     pub stderr: String,
 }
 
-/// Send one request and wait for the complete response.
+enum Record {
+    Stdout(Vec<u8>),
+    Stderr(Vec<u8>),
+    End,
+    Other,
+}
+
+async fn read_record(stream: &mut UnixStream) -> Result<Record, FcgiError> {
+    let mut header = [0u8; 8];
+    match stream.read_exact(&mut header).await {
+        Ok(_) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => {
+            return Err(FcgiError::Protocol("connection closed before END_REQUEST"));
+        }
+        Err(err) => return Err(err.into()),
+    }
+    let length = u16::from_be_bytes([header[4], header[5]]) as usize;
+    let padding = header[6] as usize;
+    let mut content = vec![0u8; length + padding];
+    stream.read_exact(&mut content).await?;
+    content.truncate(length);
+    Ok(match header[1] {
+        STDOUT => Record::Stdout(content),
+        STDERR => Record::Stderr(content),
+        END_REQUEST => Record::End,
+        _ => Record::Other,
+    })
+}
+
+/// Send one request, wait for the response headers and stream the body.
+/// `label` names the request in logs (stderr output after the headers).
 pub async fn request(
     socket: &Path,
     params: &[(String, String)],
     body: &[u8],
+    label: String,
 ) -> Result<FcgiResponse, FcgiError> {
     let mut stream = UnixStream::connect(socket)
         .await
@@ -67,35 +104,61 @@ pub async fn request(
 
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
-    loop {
-        let mut header = [0u8; 8];
-        match stream.read_exact(&mut header).await {
-            Ok(_) => {}
-            Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => {
-                return Err(FcgiError::Protocol("connection closed before END_REQUEST"));
+    let mut ended = false;
+    while split_head(&stdout).is_none() {
+        match read_record(&mut stream).await? {
+            Record::Stdout(data) => stdout.extend_from_slice(&data),
+            Record::Stderr(data) => stderr.extend_from_slice(&data),
+            Record::End => {
+                ended = true;
+                break;
             }
-            Err(err) => return Err(err.into()),
+            Record::Other => {}
         }
-        let kind = header[1];
-        let length = u16::from_be_bytes([header[4], header[5]]) as usize;
-        let padding = header[6] as usize;
-        let mut content = vec![0u8; length + padding];
-        stream.read_exact(&mut content).await?;
-        content.truncate(length);
-        match kind {
-            STDOUT => stdout.extend_from_slice(&content),
-            STDERR => stderr.extend_from_slice(&content),
-            END_REQUEST => break,
-            _ => {} // ignore unknown record types
+        if stdout.len() > MAX_HEADER_BYTES {
+            return Err(FcgiError::Protocol("headers too large"));
         }
     }
 
-    let (status, headers, body) = parse_cgi_output(&stdout)?;
+    let (status, headers, first) = parse_cgi_output(&stdout)?;
+    let first = Bytes::copy_from_slice(first);
+    let stderr = String::from_utf8_lossy(&stderr).into_owned();
+
+    let body = if ended {
+        body::full(first)
+    } else {
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<Frame<Bytes>, BoxError>>(16);
+        tokio::spawn(async move {
+            if !first.is_empty() && tx.send(Ok(Frame::data(first))).await.is_err() {
+                return; // client went away
+            }
+            loop {
+                match read_record(&mut stream).await {
+                    Ok(Record::Stdout(data)) => {
+                        if tx.send(Ok(Frame::data(Bytes::from(data)))).await.is_err() {
+                            return;
+                        }
+                    }
+                    Ok(Record::Stderr(data)) => {
+                        tracing::warn!(request = %label, stderr = %String::from_utf8_lossy(&data).trim_end(), "PHP stderr");
+                    }
+                    Ok(Record::End) => return,
+                    Ok(Record::Other) => {}
+                    Err(err) => {
+                        let _ = tx.send(Err(Box::new(err))).await;
+                        return;
+                    }
+                }
+            }
+        });
+        body::channel(rx)
+    };
+
     Ok(FcgiResponse {
         status,
         headers,
-        body: Bytes::copy_from_slice(body),
-        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+        body,
+        stderr,
     })
 }
 
@@ -283,26 +346,34 @@ mod tests {
                 b"Status: 201 Created\r\nX-Powered-By: test\r\n\r\n",
             );
             record(&mut reply, STDOUT, b"created");
-            record(&mut reply, END_REQUEST, &[0; 8]);
             stream.write_all(&reply).await.unwrap();
+            // The rest arrives later and must still reach the client.
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let mut rest = Vec::new();
+            record(&mut rest, STDOUT, b" and streamed");
+            record(&mut rest, END_REQUEST, &[0; 8]);
+            stream.write_all(&rest).await.unwrap();
         });
 
         let params = vec![("REQUEST_METHOD".to_owned(), "POST".to_owned())];
-        let response = request(&socket, &params, &vec![b'x'; 70_000])
+        let response = request(&socket, &params, &vec![b'x'; 70_000], "test".into())
             .await
             .unwrap();
-        server.await.unwrap();
-
         assert_eq!(response.status, 201);
         assert_eq!(response.headers, [("X-Powered-By".into(), "test".into())]);
-        assert_eq!(&response.body[..], b"created");
         assert_eq!(response.stderr, "PHP Notice: hi");
+        let body = http_body_util::BodyExt::collect(response.body)
+            .await
+            .unwrap()
+            .to_bytes();
+        assert_eq!(&body[..], b"created and streamed");
+        server.await.unwrap();
     }
 
     #[tokio::test]
     async fn missing_socket_is_a_connect_error() {
         let dir = tempfile::tempdir().unwrap();
-        let err = request(&dir.path().join("none.sock"), &[], b"")
+        let err = request(&dir.path().join("none.sock"), &[], b"", "test".into())
             .await
             .unwrap_err();
         assert!(matches!(err, FcgiError::Connect { .. }));

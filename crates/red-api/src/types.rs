@@ -26,6 +26,8 @@ pub struct StatusResponse {
     pub https_port: Option<u16>,
     /// Loopback port of the DNS responder, or `null` if it could not start.
     pub dns_port: Option<u16>,
+    /// `true` when ports 80/443 were opened by the privileged helper.
+    pub helper: bool,
     /// Where this installation keeps its files.
     pub paths: StatusPaths,
 }
@@ -63,6 +65,79 @@ pub struct SiteInfo {
     /// Expiry of the site's certificate (Unix time), when secured.
     #[ts(type = "number | null")]
     pub cert_expires: Option<u64>,
+}
+
+/// Something changed in the daemon. Sent on `GET /v1/events` as
+/// Server-Sent Events; clients refetch what the event names.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "type", rename_all = "snake_case")]
+#[ts(export)]
+pub enum Event {
+    /// Sent once when a client subscribes.
+    Connected,
+    /// Sites, parked paths, links, isolation or HTTPS changed.
+    SitesChanged,
+    /// Proxies changed.
+    ProxiesChanged,
+    /// PHP installations, the default version or running pools changed.
+    PhpChanged,
+}
+
+/// Outcome of one doctor check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum CheckStatus {
+    Ok,
+    /// Works, but not the way RED is meant to run (e.g. fallback ports).
+    Warn,
+    /// Broken; sites will not work until fixed.
+    Fail,
+}
+
+/// One check in `GET /v1/doctor`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Check {
+    pub id: String,
+    pub label: String,
+    pub status: CheckStatus,
+    pub detail: String,
+    /// Command or action that fixes the problem.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub fix: Option<String>,
+}
+
+/// Response of `GET /v1/doctor`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct DoctorReport {
+    pub checks: Vec<Check>,
+}
+
+/// One proxy, as returned by `GET /v1/proxies`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ProxyInfo {
+    /// The proxy answers on `<name>.<tld>`.
+    pub name: String,
+    /// Upstream URL, e.g. `http://127.0.0.1:5173`.
+    pub target: String,
+    /// URL to open in a browser.
+    pub url: String,
+    pub secure: bool,
+    #[ts(type = "number | null")]
+    pub cert_expires: Option<u64>,
+}
+
+/// Body of `POST /v1/proxies`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ProxyRequest {
+    pub name: String,
+    /// A port (`5173`), `host:port`, or an `http://` URL.
+    pub target: String,
 }
 
 /// Body of `POST /v1/paths` and `POST /v1/links`.
@@ -133,6 +208,8 @@ pub enum ErrorCode {
     Conflict,
     /// Something went wrong inside the daemon.
     Internal,
+    /// A required component (such as the helper) is not available.
+    Unavailable,
 }
 
 /// Body of every non-2xx response.

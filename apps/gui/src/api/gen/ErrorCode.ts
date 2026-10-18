@@ -3,4 +3,4 @@
 /**
  * Machine-readable error category.
  */
-export type ErrorCode = "not_found" | "bad_request" | "conflict" | "internal";
+export type ErrorCode = "not_found" | "bad_request" | "conflict" | "internal" | "unavailable";

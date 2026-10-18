@@ -13,9 +13,14 @@ path = "src/main.rs"
 
 [dependencies]
 serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+clap.workspace = true
+tokio.workspace = true
+rustix = { workspace = true, features = ["net", "process"] }
 
 [dev-dependencies]
-serde_json.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true

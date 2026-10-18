@@ -15,6 +15,7 @@ path = "src/main.rs"
 red-core.workspace = true
 red-api.workspace = true
 red-platform.workspace = true
+red-helper.workspace = true
 
 tokio.workspace = true
 axum.workspace = true
@@ -22,6 +23,8 @@ hyper.workspace = true
 hyper-util.workspace = true
 http-body-util.workspace = true
 tokio-util.workspace = true
+tokio-stream.workspace = true
+futures-util.workspace = true
 mime_guess.workspace = true
 rustls.workspace = true
 tokio-rustls.workspace = true
@@ -37,6 +40,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
+red-helper.workspace = true
 red-api = { workspace = true, features = ["client"] }
 tokio-rustls.workspace = true
 rustls.workspace = true

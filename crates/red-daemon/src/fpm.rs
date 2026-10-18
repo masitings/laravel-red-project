@@ -49,14 +49,16 @@ struct Pool {
 #[derive(Debug)]
 pub struct PhpManager {
     paths: Paths,
+    events: tokio::sync::broadcast::Sender<red_api::Event>,
     installs: RwLock<Vec<PhpInstall>>,
     pools: Mutex<HashMap<String, Pool>>,
 }
 
 impl PhpManager {
-    pub fn new(paths: Paths) -> Self {
+    pub fn new(paths: Paths, events: tokio::sync::broadcast::Sender<red_api::Event>) -> Self {
         Self {
             paths,
+            events,
             installs: RwLock::new(Vec::new()),
             pools: Mutex::new(HashMap::new()),
         }
@@ -82,7 +84,15 @@ impl PhpManager {
             });
         }
         installs.sort_by(|a, b| red_core::php::compare(&b.version, &a.version));
-        *self.installs.write().expect("installs lock poisoned") = installs.clone();
+        let changed = {
+            let mut current = self.installs.write().expect("installs lock poisoned");
+            let changed = *current != installs;
+            *current = installs.clone();
+            changed
+        };
+        if changed {
+            self.notify();
+        }
         installs
     }
 
@@ -129,6 +139,7 @@ impl PhpManager {
         let pool = self.spawn(&install).await?;
         let socket = pool.socket.clone();
         pools.insert(version.to_owned(), pool);
+        self.notify();
         Ok(socket)
     }
 
@@ -138,6 +149,7 @@ impl PhpManager {
         if let Some(pool) = pool {
             tracing::info!(version, "restarting PHP-FPM pool");
             stop(pool).await;
+            self.notify();
         }
     }
 
@@ -147,6 +159,10 @@ impl PhpManager {
         for pool in pools {
             stop(pool).await;
         }
+    }
+
+    fn notify(&self) {
+        let _ = self.events.send(red_api::Event::PhpChanged);
     }
 
     async fn spawn(&self, install: &PhpInstall) -> Result<Pool, FpmError> {

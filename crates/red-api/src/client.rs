@@ -10,7 +10,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tokio::net::UnixStream;
 
-use crate::{ApiError, StatusResponse, endpoints};
+use crate::{ApiError, Event, StatusResponse, endpoints};
 
 pub use hyper::Method;
 
@@ -76,14 +76,41 @@ impl Client {
         Ok(serde_json::from_value(value)?)
     }
 
-    /// Send any request and return the JSON body. Non-2xx responses become
-    /// [`ClientError::Api`].
-    pub async fn request(
+    /// Subscribe to `GET /v1/events` and call `on_event` for each event
+    /// until it returns `false` or the daemon closes the stream.
+    pub async fn events(&self, mut on_event: impl FnMut(Event) -> bool) -> Result<(), ClientError> {
+        let mut sender = self.connect().await?;
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri(endpoints::EVENTS)
+            .header(hyper::header::HOST, "redd")
+            .header(hyper::header::ACCEPT, "text/event-stream")
+            .body(Full::new(Bytes::new()))?;
+        let mut body = sender.send_request(request).await?.into_body();
+        let mut buffer = String::new();
+        while let Some(frame) = body.frame().await {
+            let Ok(data) = frame?.into_data() else {
+                continue;
+            };
+            buffer.push_str(&String::from_utf8_lossy(&data));
+            while let Some(end) = buffer.find("\n\n") {
+                let message: String = buffer.drain(..end + 2).collect();
+                for line in message.lines() {
+                    if let Some(json) = line.strip_prefix("data:")
+                        && let Ok(event) = serde_json::from_str::<Event>(json.trim())
+                        && !on_event(event)
+                    {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn connect(
         &self,
-        method: Method,
-        path: &str,
-        body: Option<serde_json::Value>,
-    ) -> Result<serde_json::Value, ClientError> {
+    ) -> Result<hyper::client::conn::http1::SendRequest<Full<Bytes>>, ClientError> {
         let stream =
             UnixStream::connect(&self.socket)
                 .await
@@ -98,13 +125,24 @@ impl Client {
                         source,
                     },
                 })?;
-
-        let (mut sender, connection) =
+        let (sender, connection) =
             hyper::client::conn::http1::handshake(TokioIo::new(stream)).await?;
         tokio::spawn(async move {
             // Errors surface through `send_request`; nothing to do here.
             let _ = connection.await;
         });
+        Ok(sender)
+    }
+
+    /// Send any request and return the JSON body. Non-2xx responses become
+    /// [`ClientError::Api`].
+    pub async fn request(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value, ClientError> {
+        let mut sender = self.connect().await?;
 
         let body = match body {
             Some(value) => Full::new(Bytes::from(serde_json::to_vec(&value)?)),

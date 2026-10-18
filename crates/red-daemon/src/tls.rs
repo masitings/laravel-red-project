@@ -253,12 +253,13 @@ impl ResolvesServerCert for SiteResolver {
     fn resolve(&self, hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
         let sni = hello.server_name()?;
         let state = self.app.state_snapshot();
-        let site = red_core::sites::resolve_host(&state, sni, &self.app.config.tld)?;
-        if !state.secured.contains_key(&site.name) {
-            tracing::debug!(sni, site = %site.name, "TLS handshake for a site that is not secured");
+        let target = red_core::sites::resolve_target(&state, sni, &self.app.config.tld)?;
+        let name = target.name();
+        if !state.secured.contains_key(name) {
+            tracing::debug!(sni, site = %name, "TLS handshake for a site that is not secured");
             return None;
         }
-        self.app.tls.certified_key(&site.name)
+        self.app.tls.certified_key(name)
     }
 }
 

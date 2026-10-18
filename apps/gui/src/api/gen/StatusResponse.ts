@@ -42,6 +42,10 @@ https_port: number | null,
  */
 dns_port: number | null, 
 /**
+ * `true` when ports 80/443 were opened by the privileged helper.
+ */
+helper: boolean, 
+/**
  * Where this installation keeps its files.
  */
 paths: StatusPaths, };

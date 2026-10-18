@@ -40,6 +40,9 @@ pub struct Config {
     pub https_port: u16,
     /// Port of the DNS responder on 127.0.0.1. `0` picks a free port.
     pub dns_port: u16,
+    /// Socket of the privileged helper, if not the default. When set, redd
+    /// always asks the helper for its web ports.
+    pub helper_socket: Option<PathBuf>,
 }
 
 impl Default for Config {
@@ -49,6 +52,7 @@ impl Default for Config {
             http_port: DEFAULT_HTTP_PORT,
             https_port: DEFAULT_HTTPS_PORT,
             dns_port: DEFAULT_DNS_PORT,
+            helper_socket: None,
         }
     }
 }

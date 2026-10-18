@@ -3,11 +3,10 @@
 A fast, open-source local PHP development environment for macOS and Linux.
 Park a folder, open `https://my-app.test`. No Docker, no hand-written vhosts.
 
-> **Status: M1 in progress.** RED serves parked and linked sites over HTTP
-> and HTTPS with per-site PHP versions (using the PHP-FPM already on your
-> machine), and resolves `*.test` with its own DNS responder. Ports 80/443
-> need the privileged helper, which comes next; until then sites answer on
-> ports 8180 (HTTP) and 8443 (HTTPS). See the [roadmap](#roadmap).
+> **Status: v0.1.0.** Sites, per-site PHP, local HTTPS, `.test` DNS,
+> proxies with WebSockets, a desktop app and `red doctor` all work on macOS.
+> Linux runs too, with some setup steps still manual. Database services,
+> mail and dump viewers come in v0.2. See the [roadmap](#roadmap).
 
 ## Why
 
@@ -20,30 +19,53 @@ Park a folder, open `https://my-app.test`. No Docker, no hand-written vhosts.
 - **Scriptable.** Everything the GUI does goes through the same Control API
   as the `red` CLI, and every command can print JSON.
 
+## Install
+
+RED uses the PHP already on your machine, so install PHP first
+(`brew install php`, plus `php@8.3` etc. for more versions).
+
+Download the archive for your platform from the
+[releases page](https://github.com/masitings/red-project/releases), or build
+from source with `just install`. Keep `red`, `redd` and `red-helper` in the
+same directory (for example `~/.local/bin`), then run once:
+
+```sh
+red setup     # installs the helper (80/443), starts redd at login,
+              # sets up .test DNS and trusts the local CA
+red doctor    # confirms everything is in place
+```
+
+`red setup` asks for your password: the helper and the resolver file live
+in system directories, and trusting the CA changes your keychain. Each
+step can also be run on its own (`red helper:install`, `red service:install`,
+`red dns:install`, `red trust`).
+
 ## Usage
 
 ```sh
-redd                      # start the daemon (normally launchd/systemd does this)
+cd ~/Sites && red park          # every sub-directory becomes <name>.test
+cd ~/code/shop && red link      # or link a single project
+red sites                       # URL, driver, PHP version, HTTPS
+red which                       # which site and driver serve this directory
 
-cd ~/Sites && red park    # every sub-directory becomes <name>.test
-cd ~/code/shop && red link             # or link a single project
-red sites                 # URL, driver, PHP version, path
-red which                 # which site and driver serve this directory
-
-red php:list              # PHP versions found (Homebrew, system packages)
-red use 8.4               # default PHP for all sites
-red isolate 8.2           # pin the current site to PHP 8.2
+red php:list                    # PHP versions found (Homebrew, system)
+red use 8.4                     # default PHP for all sites
+red isolate 8.2                 # pin the current site to PHP 8.2
 red unisolate
 
-red dns:install           # once: send *.test lookups to RED (uses sudo)
-red trust                 # once: trust RED's local CA (asks for your password)
-red secure                # serve the current site over HTTPS
-red secured               # secured sites and certificate expiry
+red secure                      # serve the current site over HTTPS
+red secured                     # secured sites and certificate expiry
+
+red proxy vite 5173             # vite.test → your dev server, HMR included
+red proxies
+red unproxy vite
+
+red doctor                      # what is set up, and how to fix what isn't
+red events                      # watch what the daemon is doing
 ```
 
-Until the helper lands, sites answer on `http://<name>.test:8180` and
-`https://<name>.test:8443`. `*.localhost` works without any DNS setup.
-Every command accepts `--json`.
+Every command accepts `--json`. The desktop app (in `apps/gui`) offers the
+same: sites, PHP versions, proxies and the doctor checks.
 
 RED's CA is restricted (X.509 Name Constraints) to `.test` and
 `localhost`, so it cannot issue certificates for real domains.
@@ -56,7 +78,7 @@ static sites.
 
 | Component    | What it does                                                         |
 |--------------|----------------------------------------------------------------------|
-| `redd`       | User-level daemon: Control API (unix socket), and from M1 the web server, DNS responder and process supervisor |
+| `redd`       | User-level daemon: Control API (unix socket), web server (HTTP/1.1, HTTP/2, TLS), DNS responder, reverse proxy and PHP-FPM supervisor |
 | `red`        | CLI for people and scripts                                           |
 | RED GUI      | Tauri 2 + React desktop app, a thin client of the Control API        |
 | `red-helper` | Tiny root helper that only opens ports 80/443 and writes the resolver file |
@@ -82,6 +104,7 @@ installed by rustup automatically), Node.js 22+, pnpm 10+, and
 
 ```sh
 just setup          # install frontend dependencies
+just install        # build release binaries into ~/.local/bin
 just daemon         # run redd in the foreground
 just status         # in another terminal: red status
 just gui            # run the desktop app against the running redd
@@ -105,8 +128,8 @@ Where RED keeps its files:
 
 | Phase | Scope | Gate |
 |-------|-------|------|
-| M0 Foundation | Workspace, CI, Control API, GUI shell | Green build on macOS + Linux |
-| M1 MVP | Park/link, `.test` DNS, local HTTPS, multiple PHP versions, proxies with WebSocket, GUI for sites and PHP | v0.1.0 |
+| M0 Foundation ✓ | Workspace, CI, Control API, GUI shell | Green build on macOS + Linux |
+| M1 MVP ✓ | Park/link, `.test` DNS, local HTTPS, multiple PHP versions, proxies with WebSocket, GUI for sites and PHP | v0.1.0 |
 | M2 Dev tools | MySQL/PostgreSQL/Valkey, mail catcher, dumps, log viewer, `red.yml`, Node per site | v0.2.0 |
 | M3 Distribution | Linux, our own static PHP builds, signed and notarized releases | Signed releases on both OSes |
 | M4 Advanced | On-demand Xdebug, sharing/tunnels, profiler, MCP server, git workspaces | v1.0.0 |

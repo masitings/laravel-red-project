@@ -103,16 +103,77 @@ pub fn find(state: &State, name: &str) -> Option<Site> {
 /// matches the full name, leading labels are dropped, so `api.blog.test`
 /// falls back to the `blog` site.
 pub fn resolve_host(state: &State, host: &str, tld: &str) -> Option<Site> {
+    match resolve_target(state, host, tld)? {
+        Target::Site(site) => Some(site),
+        Target::Proxy { .. } => None,
+    }
+}
+
+/// What answers a host: a site on disk, or a proxy to a local port.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Target {
+    Site(Site),
+    Proxy { name: String, url: String },
+}
+
+impl Target {
+    /// The site or proxy name.
+    pub fn name(&self) -> &str {
+        match self {
+            Target::Site(site) => &site.name,
+            Target::Proxy { name, .. } => name,
+        }
+    }
+}
+
+/// Like [`resolve_host`], but proxies count too. At each level a proxy wins
+/// over a site of the same name.
+pub fn resolve_target(state: &State, host: &str, tld: &str) -> Option<Target> {
     let host = strip_port(host).trim_end_matches('.').to_ascii_lowercase();
     let mut name = host
         .strip_suffix(&format!(".{tld}"))
         .or_else(|| host.strip_suffix(".localhost"))?;
     loop {
+        if let Some(url) = state.proxies.get(name) {
+            return Some(Target::Proxy {
+                name: name.to_owned(),
+                url: url.clone(),
+            });
+        }
         if let Some(site) = find(state, name) {
-            return Some(site);
+            return Some(Target::Site(site));
         }
         name = name.split_once('.')?.1;
     }
+}
+
+/// Normalise what a user typed as a proxy target into `http://host:port`.
+/// Accepts a bare port (`5173`), `host:port`, or an `http://` URL.
+pub fn normalize_proxy_target(input: &str) -> Option<String> {
+    let input = input.trim().trim_end_matches('/');
+    if let Ok(port) = input.parse::<u16>() {
+        return (port != 0).then(|| format!("http://127.0.0.1:{port}"));
+    }
+    let rest = match input.split_once("://") {
+        Some(("http", rest)) => rest,
+        Some(_) => return None, // only plain HTTP upstreams for now
+        None => input,
+    };
+    let (authority, path) = rest.split_once('/').map_or((rest, ""), |(a, p)| (a, p));
+    let (host, port) = authority.rsplit_once(':')?;
+    let port: u16 = port.parse().ok().filter(|p| *p != 0)?;
+    let host_ok = !host.is_empty()
+        && host
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '[' | ']' | ':'));
+    if !host_ok {
+        return None;
+    }
+    Some(if path.is_empty() {
+        format!("http://{host}:{port}")
+    } else {
+        format!("http://{host}:{port}/{path}")
+    })
 }
 
 fn strip_port(host: &str) -> &str {
@@ -141,6 +202,42 @@ fn parked_sites(parked: &Path) -> Vec<(String, PathBuf)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn proxies_win_and_targets_are_normalised() {
+        let (_root, mut state) = fixture();
+        state
+            .proxies
+            .insert("blog".into(), "http://127.0.0.1:5173".into());
+        let target = resolve_target(&state, "hmr.blog.test", "test").unwrap();
+        assert_eq!(
+            target,
+            Target::Proxy {
+                name: "blog".into(),
+                url: "http://127.0.0.1:5173".into()
+            }
+        );
+        assert_eq!(resolve_host(&state, "blog.test", "test"), None);
+
+        let n = |s: &str| normalize_proxy_target(s);
+        assert_eq!(n("5173").as_deref(), Some("http://127.0.0.1:5173"));
+        assert_eq!(
+            n("localhost:3000").as_deref(),
+            Some("http://localhost:3000")
+        );
+        assert_eq!(
+            n("http://127.0.0.1:8000/").as_deref(),
+            Some("http://127.0.0.1:8000")
+        );
+        assert_eq!(
+            n("http://127.0.0.1:8000/app").as_deref(),
+            Some("http://127.0.0.1:8000/app")
+        );
+        assert_eq!(n("https://x:1"), None);
+        assert_eq!(n("0"), None);
+        assert_eq!(n("nope"), None);
+        assert_eq!(n("bad host:1"), None);
+    }
 
     #[test]
     fn normalizes_directory_names() {

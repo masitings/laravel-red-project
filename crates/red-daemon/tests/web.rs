@@ -72,6 +72,11 @@ async fn start() -> Daemon {
     write(&sites.join("wordpress/wp-config.php"), "<?php");
     write(&sites.join("wordpress/index.php"), ECHO_PHP);
     write(&sites.join("wordpress/wp-admin/index.php"), ECHO_PHP);
+    write(
+        &sites.join("streamer/index.php"),
+        "<?php while (ob_get_level()) { ob_end_flush(); }\n\
+         echo str_repeat('a', 8192); flush(); usleep(700000); echo 'done';",
+    );
 
     let (stop, stopped) = oneshot::channel::<()>();
     let task = tokio::spawn(red_daemon::run(paths.clone(), async {
@@ -198,6 +203,7 @@ async fn lists_sites_with_drivers_and_urls() {
         [
             ("laravel-app", "laravel"),
             ("static-site", "static"),
+            ("streamer", "php"),
             ("wordpress", "wordpress")
         ]
     );
@@ -355,5 +361,57 @@ async fn links_and_isolation() {
         .await
         .unwrap();
     assert_eq!(daemon.get("my-project.test", "/").await.status, 404);
+    daemon.stop().await;
+}
+
+#[tokio::test]
+async fn php_output_is_streamed_before_the_script_finishes() {
+    let daemon = start().await;
+    if daemon.php().await.is_none() {
+        return daemon.stop().await;
+    }
+    let stream = TcpStream::connect(("127.0.0.1", daemon.port))
+        .await
+        .unwrap();
+    let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+        .await
+        .unwrap();
+    tokio::spawn(conn);
+    let started = std::time::Instant::now();
+    let request = Request::builder()
+        .uri("/")
+        .header("host", "streamer.test")
+        .body(Full::new(Bytes::new()))
+        .unwrap();
+    let mut body = sender.send_request(request).await.unwrap().into_body();
+
+    let first = BodyExt::frame(&mut body)
+        .await
+        .unwrap()
+        .unwrap()
+        .into_data()
+        .unwrap();
+    let first_at = started.elapsed();
+    assert!(first.starts_with(b"a"));
+    assert!(
+        first_at < Duration::from_millis(600),
+        "first bytes took {first_at:?}"
+    );
+    let mut rest = first.to_vec();
+    while let Some(frame) = BodyExt::frame(&mut body).await {
+        if let Ok(data) = frame.unwrap().into_data() {
+            rest.extend_from_slice(&data);
+        }
+    }
+    assert!(started.elapsed() >= Duration::from_millis(650));
+    assert!(rest.ends_with(b"done"));
+    daemon.stop().await;
+}
+
+#[tokio::test]
+async fn static_files_report_their_length() {
+    let daemon = start().await;
+    let reply = daemon.get("static-site.test", "/").await;
+    assert_eq!(reply.headers["content-length"], "21");
     daemon.stop().await;
 }
