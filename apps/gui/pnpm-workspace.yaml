@@ -1,0 +1,4 @@
+# Only resolve packages that have been public for at least three days, so
+# the lockfile also passes stricter local pnpm policies (and gives the
+# registry time to pull compromised releases).
+minimumReleaseAge: 4320
