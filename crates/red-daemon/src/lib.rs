@@ -1,28 +1,35 @@
 //! `redd`, the RED Project daemon.
 //!
-//! Serves the Control API on a unix socket and sites on a loopback HTTP
-//! port, and supervises one PHP-FPM pool per PHP version in use. DNS, TLS
-//! and the privileged helper follow later in M1.
+//! Serves the Control API on a unix socket, sites over HTTP and HTTPS on
+//! loopback, and the local TLD over DNS; supervises one PHP-FPM pool per PHP
+//! version in use. Ports 80/443 need the privileged helper (next step of
+//! M1); without it RED falls back to unprivileged ports.
 
 pub mod api;
+pub mod dns;
 pub mod fastcgi;
 pub mod fpm;
 pub mod socket;
+pub mod tls;
 pub mod web;
 
 use std::future::Future;
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Instant;
 
-use red_core::config::FALLBACK_HTTP_PORT;
+use red_core::config::{FALLBACK_HTTP_PORT, FALLBACK_HTTPS_PORT};
 use red_core::{Config, State};
 use red_platform::Paths;
 use tokio_util::sync::CancellationToken;
 
 use crate::fpm::PhpManager;
 
-/// Overrides `http_port` from `config.toml`.
+/// Override `http_port` from `config.toml`.
 pub const RED_HTTP_PORT_ENV: &str = "RED_HTTP_PORT";
+/// Override `https_port` from `config.toml`.
+pub const RED_HTTPS_PORT_ENV: &str = "RED_HTTPS_PORT";
+/// Override `dns_port` from `config.toml`.
+pub const RED_DNS_PORT_ENV: &str = "RED_DNS_PORT";
 
 /// Errors that stop the daemon from starting or running.
 #[derive(Debug, thiserror::Error)]
@@ -33,8 +40,10 @@ pub enum DaemonError {
     Config(#[from] red_core::ConfigError),
     #[error(transparent)]
     State(#[from] red_core::StateError),
-    #[error("invalid {RED_HTTP_PORT_ENV}: {0:?}")]
-    InvalidPort(String),
+    #[error(transparent)]
+    Tls(#[from] tls::TlsError),
+    #[error("invalid {name}: {value:?}")]
+    InvalidPort { name: &'static str, value: String },
     #[error("{context}: {source}")]
     Io {
         context: String,
@@ -57,8 +66,11 @@ pub struct AppState {
     pub config: Config,
     pub started: Instant,
     pub php: PhpManager,
-    /// Port the web server listens on, once it is bound.
+    pub tls: tls::Authority,
+    /// Ports actually in use, once bound.
     pub http_port: OnceLock<u16>,
+    pub https_port: OnceLock<u16>,
+    pub dns_port: OnceLock<u16>,
     state: RwLock<State>,
 }
 
@@ -95,39 +107,62 @@ impl AppState {
             .or_else(|| self.php.newest())
     }
 
-    /// Browser URL for a site.
-    pub fn site_url(&self, name: &str) -> String {
-        match self.http_port.get() {
-            Some(80) | None => format!("http://{name}.{}", self.config.tld),
-            Some(port) => format!("http://{name}.{}:{port}", self.config.tld),
+    /// Browser URL for a site: HTTPS when it is secured and the HTTPS
+    /// server runs, HTTP otherwise.
+    pub fn site_url(&self, state: &State, name: &str) -> String {
+        let tld = &self.config.tld;
+        if state.secured.contains_key(name)
+            && let Some(port) = self.https_port.get()
+        {
+            return match port {
+                443 => format!("https://{name}.{tld}"),
+                port => format!("https://{name}.{tld}:{port}"),
+            };
         }
+        match self.http_port.get() {
+            Some(80) | None => format!("http://{name}.{tld}"),
+            Some(port) => format!("http://{name}.{tld}:{port}"),
+        }
+    }
+}
+
+fn port_setting(name: &'static str, configured: u16) -> Result<u16, DaemonError> {
+    match std::env::var(name) {
+        Ok(value) => value
+            .parse()
+            .map_err(|_| DaemonError::InvalidPort { name, value }),
+        Err(_) => Ok(configured),
     }
 }
 
 /// Run the daemon until `shutdown` resolves.
 ///
-/// Loads configuration and state, claims the Control API socket, binds the
-/// web server and serves both. PHP-FPM pools and the socket file are cleaned
-/// up before this returns.
+/// Loads configuration and state, claims the Control API socket, starts the
+/// DNS responder and the HTTP/HTTPS servers, and serves until shutdown.
+/// PHP-FPM pools and the socket file are cleaned up before this returns.
 pub async fn run(paths: Paths, shutdown: impl Future<Output = ()>) -> Result<(), DaemonError> {
     let config = Config::load(&paths.config_file())?;
     let state = State::load(&paths.state_file())?;
-    let http_port = match std::env::var(RED_HTTP_PORT_ENV) {
-        Ok(value) => value.parse().map_err(|_| DaemonError::InvalidPort(value))?,
-        Err(_) => config.http_port,
-    };
+    let http_port = port_setting(RED_HTTP_PORT_ENV, config.http_port)?;
+    let https_port = port_setting(RED_HTTPS_PORT_ENV, config.https_port)?;
+    let dns_port = port_setting(RED_DNS_PORT_ENV, config.dns_port)?;
 
     let socket_path = paths.socket();
     let listener = socket::bind(&socket_path).await?;
+    let authority = tls::Authority::load_or_create(&paths.data_dir.join("certs"), &config.tld)?;
 
     let app = Arc::new(AppState {
         php: PhpManager::new(paths.clone()),
+        tls: authority,
         paths,
         config,
         started: Instant::now(),
         http_port: OnceLock::new(),
+        https_port: OnceLock::new(),
+        dns_port: OnceLock::new(),
         state: RwLock::new(state),
     });
+    renew_certificates(&app);
     let installs = app.php.discover().await;
     tracing::info!(
         versions = ?installs.iter().map(|i| &i.full_version).collect::<Vec<_>>(),
@@ -135,24 +170,49 @@ pub async fn run(paths: Paths, shutdown: impl Future<Output = ()>) -> Result<(),
     );
 
     let cancel = CancellationToken::new();
-    let web_task = match bind_web(http_port).await {
-        Some((listeners, port)) => {
-            let _ = app.http_port.set(port);
-            tracing::info!(port, tld = %app.config.tld, "serving sites");
-            Some(tokio::spawn(web::serve(
-                listeners,
-                app.clone(),
+    let mut tasks = Vec::new();
+
+    match dns::bind(dns_port).await {
+        Ok((socket, port)) => {
+            let _ = app.dns_port.set(port);
+            tracing::info!(port, tld = %app.config.tld, "DNS responder listening");
+            tasks.push(tokio::spawn(dns::serve(
+                socket,
+                app.config.tld.clone(),
                 cancel.clone(),
-            )))
+            )));
         }
-        None => None,
-    };
+        Err(err) => tracing::error!(%err, port = dns_port, "DNS responder disabled"),
+    }
+
+    if let Some((listeners, port)) = bind_web(https_port, FALLBACK_HTTPS_PORT, "HTTPS").await {
+        let config = tls::server_config(app.clone())?;
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+        let _ = app.https_port.set(port);
+        tracing::info!(port, "serving sites over HTTPS");
+        tasks.push(tokio::spawn(web::serve_tls(
+            listeners,
+            app.clone(),
+            acceptor,
+            cancel.clone(),
+        )));
+    }
+
+    if let Some((listeners, port)) = bind_web(http_port, FALLBACK_HTTP_PORT, "HTTP").await {
+        let _ = app.http_port.set(port);
+        tracing::info!(port, "serving sites over HTTP");
+        tasks.push(tokio::spawn(web::serve(
+            listeners,
+            app.clone(),
+            cancel.clone(),
+        )));
+    }
     tracing::info!(socket = %socket_path.display(), "Control API listening");
 
     let result = socket::serve(listener, api::router(app.clone()), shutdown).await;
 
     cancel.cancel();
-    if let Some(task) = web_task {
+    for task in tasks {
         let _ = task.await;
     }
     app.php.shutdown().await;
@@ -165,27 +225,54 @@ pub async fn run(paths: Paths, shutdown: impl Future<Output = ()>) -> Result<(),
     result
 }
 
-/// Bind the web server, falling back to an unprivileged port when the
+/// Reissue certificates of secured sites that expire soon.
+fn renew_certificates(app: &AppState) {
+    let due: Vec<String> = app
+        .state_snapshot()
+        .secured
+        .iter()
+        .filter(|(_, expires)| tls::Authority::needs_renewal(**expires))
+        .map(|(site, _)| site.clone())
+        .collect();
+    for site in due {
+        match app.tls.issue(&site) {
+            Ok(expires) => {
+                if let Err(err) = app.update_state(|s| s.secured.insert(site.clone(), expires)) {
+                    tracing::warn!(%site, %err, "could not record renewed certificate");
+                } else {
+                    tracing::info!(%site, "renewed certificate");
+                }
+            }
+            Err(err) => tracing::warn!(%site, %err, "could not renew certificate"),
+        }
+    }
+}
+
+/// Bind a web listener, falling back to an unprivileged port when the
 /// configured one needs root and no helper is available yet.
-async fn bind_web(port: u16) -> Option<(Vec<tokio::net::TcpListener>, u16)> {
+async fn bind_web(
+    port: u16,
+    fallback: u16,
+    what: &str,
+) -> Option<(Vec<tokio::net::TcpListener>, u16)> {
     match web::bind(port).await {
         Ok(bound) => Some(bound),
         Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied && port < 1024 => {
             tracing::warn!(
                 port,
-                fallback = FALLBACK_HTTP_PORT,
-                "cannot bind a privileged port without the helper; using the fallback port"
+                fallback,
+                "cannot bind a privileged {what} port without the helper; using the fallback port"
             );
-            match web::bind(FALLBACK_HTTP_PORT).await {
+            match web::bind(fallback).await {
                 Ok(bound) => Some(bound),
                 Err(err) => {
-                    tracing::error!(%err, port = FALLBACK_HTTP_PORT, "web server disabled");
+                    tracing::error!(%err, port = fallback, "{what} server disabled");
                     None
                 }
             }
         }
         Err(err) => {
-            tracing::error!(%err, port, "web server disabled");
+            tracing::error!(%err, port, "{what} server disabled");
             None
         }
     }

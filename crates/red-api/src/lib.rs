@@ -41,6 +41,11 @@ pub mod endpoints {
         format!("{SITES}/{name}/php")
     }
 
+    /// `/v1/sites/{name}/secure`: `PUT` secures, `DELETE` unsecures.
+    pub fn site_secure(name: &str) -> String {
+        format!("{SITES}/{name}/secure")
+    }
+
     /// `/v1/links/{name}`
     pub fn link(name: &str) -> String {
         format!("{LINKS}/{name}")

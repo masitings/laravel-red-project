@@ -3,4 +3,8 @@
 /**
  * Directories reported by [`StatusResponse`].
  */
-export type StatusPaths = { config_dir: string, data_dir: string, socket: string, };
+export type StatusPaths = { config_dir: string, data_dir: string, socket: string, 
+/**
+ * The local CA certificate to add to the system trust store.
+ */
+ca_cert: string, };

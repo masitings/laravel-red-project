@@ -23,6 +23,11 @@ hyper-util.workspace = true
 http-body-util.workspace = true
 tokio-util.workspace = true
 mime_guess.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
+rustls-pki-types.workspace = true
+rcgen.workspace = true
+time.workspace = true
 tower.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -33,6 +38,9 @@ tracing-subscriber.workspace = true
 
 [dev-dependencies]
 red-api = { workspace = true, features = ["client"] }
+tokio-rustls.workspace = true
+rustls.workspace = true
+rustls-pki-types.workspace = true
 tempfile.workspace = true
 serde_json.workspace = true
 

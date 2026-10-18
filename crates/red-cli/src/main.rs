@@ -10,6 +10,8 @@ use red_api::{
 use red_platform::Paths;
 use serde::Serialize;
 
+mod system;
+
 /// red: local PHP development environment.
 #[derive(Debug, Parser)]
 #[command(version, propagate_version = true)]
@@ -66,6 +68,22 @@ enum Command {
         #[arg(long)]
         site: Option<String>,
     },
+    /// Serve a site over HTTPS (default: the site in the current directory).
+    Secure { name: Option<String> },
+    /// Serve a site over plain HTTP again.
+    Unsecure { name: Option<String> },
+    /// List sites served over HTTPS and when their certificates expire.
+    Secured,
+    /// Trust RED's local certificate authority (asks for your password).
+    Trust,
+    /// Remove RED's local certificate authority from the trust store.
+    Untrust,
+    /// Point the OS at RED's DNS responder for the local TLD (uses sudo).
+    #[command(name = "dns:install")]
+    DnsInstall,
+    /// Remove the resolver file installed by `red dns:install` (uses sudo).
+    #[command(name = "dns:uninstall")]
+    DnsUninstall,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -250,6 +268,64 @@ async fn run(cli: &Cli) -> anyhow::Result<()> {
                 );
             })?;
         }
+        Command::Secure { name } => {
+            let name = ctx.site_name(name).await?;
+            let site: SiteInfo = ctx
+                .send(Method::PUT, &endpoints::site_secure(&name), None::<&()>)
+                .await?;
+            ctx.output(&site, |site| {
+                println!("{} is now served at {}", site.name, site.url);
+            })?;
+        }
+        Command::Unsecure { name } => {
+            let name = ctx.site_name(name).await?;
+            let site: SiteInfo = ctx
+                .send(Method::DELETE, &endpoints::site_secure(&name), None::<&()>)
+                .await?;
+            ctx.output(&site, |site| {
+                println!("{} is served at {} again", site.name, site.url);
+            })?;
+        }
+        Command::Secured => {
+            let sites: Vec<SiteInfo> = ctx.client.get(endpoints::SITES).await?;
+            let secured: Vec<SiteInfo> = sites.into_iter().filter(|s| s.secure).collect();
+            ctx.output(&secured, |sites| {
+                if sites.is_empty() {
+                    println!("No secured sites. Run `red secure` in a site's directory.");
+                    return;
+                }
+                let rows: Vec<[String; 2]> = sites
+                    .iter()
+                    .map(|s| {
+                        let expires = s
+                            .cert_expires
+                            .map(red_core_date)
+                            .unwrap_or_else(|| "-".into());
+                        [s.url.clone(), expires]
+                    })
+                    .collect();
+                print_table(&["URL", "VALID UNTIL"], &rows);
+            })?;
+        }
+        Command::Trust => {
+            let status = ctx.client.status().await?;
+            system::trust(Path::new(&status.paths.ca_cert))?;
+        }
+        Command::Untrust => {
+            let status = ctx.client.status().await?;
+            system::untrust(Path::new(&status.paths.ca_cert))?;
+        }
+        Command::DnsInstall => {
+            let status = ctx.client.status().await?;
+            let port = status
+                .dns_port
+                .context("redd's DNS responder is not running; check the redd log")?;
+            system::install_resolver(&status.tld, port)?;
+        }
+        Command::DnsUninstall => {
+            let status = ctx.client.status().await?;
+            system::uninstall_resolver(&status.tld)?;
+        }
         Command::Unisolate { site } => {
             let name = ctx.site_name(site).await?;
             let site: SiteInfo = ctx
@@ -316,12 +392,25 @@ fn print_status(status: &StatusResponse) {
         status.version, status.api_version, status.os
     );
     match status.http_port {
-        Some(port) => println!("web      http://*.{}:{port}", status.tld),
-        None => println!("web      not running (see the redd log)"),
+        Some(port) => println!("http     http://*.{}:{port}", status.tld),
+        None => println!("http     not running (see the redd log)"),
+    }
+    match status.https_port {
+        Some(port) => println!("https    https://*.{}:{port}", status.tld),
+        None => println!("https    not running (see the redd log)"),
+    }
+    match status.dns_port {
+        Some(port) => println!("dns      .{} on 127.0.0.1:{port}", status.tld),
+        None => println!("dns      not running (see the redd log)"),
     }
     println!("config   {}", status.paths.config_dir);
     println!("data     {}", status.paths.data_dir);
     println!("socket   {}", status.paths.socket);
+    println!("ca       {}", status.paths.ca_cert);
+}
+
+fn red_core_date(unix: u64) -> String {
+    red_core::time::date_from_unix(unix)
 }
 
 fn print_sites(sites: &[SiteInfo]) {
@@ -463,6 +552,8 @@ mod tests {
             driver: "php".into(),
             php: None,
             isolated: false,
+            secure: false,
+            cert_expires: None,
         };
         let sites = vec![
             site("mono", "/nonexistent/mono"),

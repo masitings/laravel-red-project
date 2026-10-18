@@ -20,8 +20,12 @@ pub struct StatusResponse {
     pub uptime_secs: u64,
     /// Top-level domain sites are served under.
     pub tld: String,
-    /// Port the web server listens on, or `null` if it could not start.
+    /// Port the HTTP server listens on, or `null` if it could not start.
     pub http_port: Option<u16>,
+    /// Port the HTTPS server listens on, or `null` if it could not start.
+    pub https_port: Option<u16>,
+    /// Loopback port of the DNS responder, or `null` if it could not start.
+    pub dns_port: Option<u16>,
     /// Where this installation keeps its files.
     pub paths: StatusPaths,
 }
@@ -54,6 +58,11 @@ pub struct SiteInfo {
     pub php: Option<String>,
     /// `true` when the PHP version is pinned for this site.
     pub isolated: bool,
+    /// `true` when the site is served over HTTPS.
+    pub secure: bool,
+    /// Expiry of the site's certificate (Unix time), when secured.
+    #[ts(type = "number | null")]
+    pub cert_expires: Option<u64>,
 }
 
 /// Body of `POST /v1/paths` and `POST /v1/links`.
@@ -107,6 +116,8 @@ pub struct StatusPaths {
     pub config_dir: String,
     pub data_dir: String,
     pub socket: String,
+    /// The local CA certificate to add to the system trust store.
+    pub ca_cert: String,
 }
 
 /// Machine-readable error category.

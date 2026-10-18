@@ -21,6 +21,18 @@ use tokio_util::sync::CancellationToken;
 use crate::AppState;
 use crate::fastcgi::{self, FcgiError};
 
+/// How a request reached us.
+#[derive(Debug, Clone, Copy)]
+pub struct Conn {
+    pub remote: SocketAddr,
+    pub local: SocketAddr,
+    /// `true` for requests that arrived over TLS.
+    pub secure: bool,
+}
+
+/// How long a client may take to finish the TLS handshake.
+const TLS_HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Largest request body passed to PHP (uploads included).
 const MAX_BODY: usize = 512 * 1024 * 1024;
 
@@ -40,12 +52,32 @@ pub async fn bind(port: u16) -> std::io::Result<(Vec<TcpListener>, u16)> {
     Ok((listeners, port))
 }
 
-/// Serve requests on every listener until `cancel` fires.
+/// Serve plain HTTP on every listener until `cancel` fires.
 pub async fn serve(listeners: Vec<TcpListener>, app: Arc<AppState>, cancel: CancellationToken) {
+    accept_loop(listeners, app, cancel, None).await;
+}
+
+/// Serve HTTPS (HTTP/1.1 and HTTP/2) on every listener until `cancel` fires.
+pub async fn serve_tls(
+    listeners: Vec<TcpListener>,
+    app: Arc<AppState>,
+    acceptor: tokio_rustls::TlsAcceptor,
+    cancel: CancellationToken,
+) {
+    accept_loop(listeners, app, cancel, Some(acceptor)).await;
+}
+
+async fn accept_loop(
+    listeners: Vec<TcpListener>,
+    app: Arc<AppState>,
+    cancel: CancellationToken,
+    tls: Option<tokio_rustls::TlsAcceptor>,
+) {
     let mut tasks = Vec::new();
     for listener in listeners {
         let app = app.clone();
         let cancel = cancel.clone();
+        let tls = tls.clone();
         tasks.push(tokio::spawn(async move {
             loop {
                 let (stream, remote) = tokio::select! {
@@ -58,17 +90,46 @@ pub async fn serve(listeners: Vec<TcpListener>, app: Arc<AppState>, cancel: Canc
                         }
                     },
                 };
-                let local = stream.local_addr().unwrap_or(remote);
+                let conn = Conn {
+                    remote,
+                    local: stream.local_addr().unwrap_or(remote),
+                    secure: tls.is_some(),
+                };
                 let app = app.clone();
+                let tls = tls.clone();
                 tokio::spawn(async move {
                     let service = hyper::service::service_fn(move |req| {
                         let app = app.clone();
-                        async move { Ok::<_, Infallible>(handle(req, app, remote, local).await) }
+                        async move { Ok::<_, Infallible>(handle(req, app, conn).await) }
                     });
-                    let result = hyper::server::conn::http1::Builder::new()
-                        .serve_connection(TokioIo::new(stream), service)
-                        .with_upgrades()
-                        .await;
+                    let result = match tls {
+                        None => hyper::server::conn::http1::Builder::new()
+                            .serve_connection(TokioIo::new(stream), service)
+                            .with_upgrades()
+                            .await
+                            .map_err(|err| err.to_string()),
+                        Some(acceptor) => {
+                            let tls_stream = match tokio::time::timeout(
+                                TLS_HANDSHAKE_TIMEOUT,
+                                acceptor.accept(stream),
+                            )
+                            .await
+                            {
+                                Ok(Ok(tls_stream)) => tls_stream,
+                                Ok(Err(err)) => {
+                                    tracing::debug!(%err, "TLS handshake failed");
+                                    return;
+                                }
+                                Err(_) => return,
+                            };
+                            hyper_util::server::conn::auto::Builder::new(
+                                hyper_util::rt::TokioExecutor::new(),
+                            )
+                            .serve_connection_with_upgrades(TokioIo::new(tls_stream), service)
+                            .await
+                            .map_err(|err| err.to_string())
+                        }
+                    };
                     if let Err(err) = result {
                         tracing::debug!(%err, "connection closed with error");
                     }
@@ -81,12 +142,7 @@ pub async fn serve(listeners: Vec<TcpListener>, app: Arc<AppState>, cancel: Canc
     }
 }
 
-async fn handle(
-    req: Request<Incoming>,
-    app: Arc<AppState>,
-    remote: SocketAddr,
-    local: SocketAddr,
-) -> Response<Body> {
+async fn handle(req: Request<Incoming>, app: Arc<AppState>, conn: Conn) -> Response<Body> {
     let host = host_of(&req).unwrap_or_default();
     let state = app.state_snapshot();
     let Some(site) = sites::resolve_host(&state, &host, &app.config.tld) else {
@@ -100,6 +156,20 @@ async fn handle(
             ),
         );
     };
+
+    if !conn.secure
+        && state.secured.contains_key(&site.name)
+        && let Some(https_port) = app.https_port.get()
+    {
+        let authority = host.rsplit_once(':').map_or(host.as_str(), |(h, _)| h);
+        let port = if *https_port == 443 {
+            String::new()
+        } else {
+            format!(":{https_port}")
+        };
+        let path = req.uri().path_and_query().map_or("/", |pq| pq.as_str());
+        return redirect(&format!("https://{authority}{port}{path}"));
+    }
 
     let driver = driver::detect(&site.path);
     let action = driver.resolve(&site.path, req.uri().path());
@@ -116,18 +186,13 @@ async fn handle(
                 Some(query) => format!("{location}?{query}"),
                 None => location,
             };
-            let mut response = Response::new(Body::default());
-            *response.status_mut() = StatusCode::MOVED_PERMANENTLY;
-            if let Ok(value) = HeaderValue::from_str(&location) {
-                response.headers_mut().insert(header::LOCATION, value);
-            }
-            response
+            redirect(&location)
         }
         Action::Static(path) => serve_file(req.method(), &path).await,
         Action::Php(script) => {
             let version = app.effective_php(&state, &site.name);
             match version {
-                Some(version) => run_php(req, &app, &site, &script, &version, remote, local).await,
+                Some(version) => run_php(req, &app, &site, &script, &version, conn).await,
                 None => page(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "No PHP installed",
@@ -189,8 +254,7 @@ async fn run_php(
     site: &Site,
     script: &PhpScript,
     version: &str,
-    remote: SocketAddr,
-    local: SocketAddr,
+    conn: Conn,
 ) -> Response<Body> {
     let (parts, body) = req.into_parts();
     let body = match Limited::new(body, MAX_BODY).collect().await {
@@ -203,7 +267,7 @@ async fn run_php(
             );
         }
     };
-    let params = cgi_params(&parts, script, &body, remote, local);
+    let params = cgi_params(&parts, script, &body, conn);
 
     let mut attempt = 0;
     loop {
@@ -251,8 +315,7 @@ fn cgi_params(
     parts: &hyper::http::request::Parts,
     script: &PhpScript,
     body: &Bytes,
-    remote: SocketAddr,
-    local: SocketAddr,
+    conn: Conn,
 ) -> Vec<(String, String)> {
     let uri = &parts.uri;
     let request_uri = uri
@@ -274,10 +337,10 @@ fn cgi_params(
         ),
         ("SERVER_PROTOCOL".into(), format!("{:?}", parts.version)),
         ("SERVER_NAME".into(), server_name),
-        ("SERVER_ADDR".into(), local.ip().to_string()),
-        ("SERVER_PORT".into(), local.port().to_string()),
-        ("REMOTE_ADDR".into(), remote.ip().to_string()),
-        ("REMOTE_PORT".into(), remote.port().to_string()),
+        ("SERVER_ADDR".into(), conn.local.ip().to_string()),
+        ("SERVER_PORT".into(), conn.local.port().to_string()),
+        ("REMOTE_ADDR".into(), conn.remote.ip().to_string()),
+        ("REMOTE_PORT".into(), conn.remote.port().to_string()),
         ("REQUEST_METHOD".into(), parts.method.to_string()),
         ("REQUEST_URI".into(), request_uri),
         ("DOCUMENT_URI".into(), script.script_name.clone()),
@@ -297,6 +360,12 @@ fn cgi_params(
         ("CONTENT_LENGTH".into(), body.len().to_string()),
         ("REDIRECT_STATUS".into(), "200".into()),
     ];
+    if conn.secure {
+        params.push(("HTTPS".into(), "on".into()));
+        params.push(("REQUEST_SCHEME".into(), "https".into()));
+    } else {
+        params.push(("REQUEST_SCHEME".into(), "http".into()));
+    }
     if let Some(info) = &script.path_info {
         params.push(("PATH_INFO".into(), info.clone()));
     }
@@ -348,6 +417,16 @@ fn php_response(fcgi: fastcgi::FcgiResponse) -> Response<Body> {
             header::CONTENT_TYPE,
             HeaderValue::from_static("text/html; charset=utf-8"),
         );
+    }
+    response
+}
+
+/// A permanent redirect to `location`.
+fn redirect(location: &str) -> Response<Body> {
+    let mut response = Response::new(Body::default());
+    *response.status_mut() = StatusCode::MOVED_PERMANENTLY;
+    if let Ok(value) = HeaderValue::from_str(location) {
+        response.headers_mut().insert(header::LOCATION, value);
     }
     response
 }

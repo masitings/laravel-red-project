@@ -18,6 +18,16 @@ pub const DEFAULT_HTTP_PORT: u16 = 80;
 /// privileged port (no helper installed yet).
 pub const FALLBACK_HTTP_PORT: u16 = 8180;
 
+/// Port the HTTPS server listens on when none is configured.
+pub const DEFAULT_HTTPS_PORT: u16 = 443;
+
+/// Port used instead of [`DEFAULT_HTTPS_PORT`] without the helper.
+pub const FALLBACK_HTTPS_PORT: u16 = 8443;
+
+/// Loopback port of the DNS responder. Unprivileged, so no root is needed;
+/// the resolver file tells the OS to send `.<tld>` queries here.
+pub const DEFAULT_DNS_PORT: u16 = 53530;
+
 /// Contents of `config.toml`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -26,6 +36,10 @@ pub struct Config {
     pub tld: String,
     /// Port for plain HTTP. `0` picks a free port (used by tests).
     pub http_port: u16,
+    /// Port for HTTPS. `0` picks a free port.
+    pub https_port: u16,
+    /// Port of the DNS responder on 127.0.0.1. `0` picks a free port.
+    pub dns_port: u16,
 }
 
 impl Default for Config {
@@ -33,6 +47,8 @@ impl Default for Config {
         Self {
             tld: DEFAULT_TLD.to_owned(),
             http_port: DEFAULT_HTTP_PORT,
+            https_port: DEFAULT_HTTPS_PORT,
+            dns_port: DEFAULT_DNS_PORT,
         }
     }
 }
@@ -113,6 +129,8 @@ mod tests {
         assert_eq!(config, Config::default());
         assert_eq!(config.tld, "test");
         assert_eq!(config.http_port, 80);
+        assert_eq!(config.https_port, 443);
+        assert_eq!(config.dns_port, 53530);
     }
 
     #[test]
@@ -121,11 +139,15 @@ mod tests {
             r#"
             tld = "localhost"
             http_port = 8080
+            https_port = 8443
+            dns_port = 5300
             "#,
         )
         .unwrap();
         assert_eq!(config.tld, "localhost");
         assert_eq!(config.http_port, 8080);
+        assert_eq!(config.https_port, 8443);
+        assert_eq!(config.dns_port, 5300);
     }
 
     #[test]

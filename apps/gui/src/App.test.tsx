@@ -18,10 +18,13 @@ const status: StatusResponse = {
   uptime_secs: 125,
   tld: "test",
   http_port: 8180,
+  https_port: 8443,
+  dns_port: 53530,
   paths: {
     config_dir: "/Users/me/Library/Application Support/RED",
     data_dir: "/Users/me/Library/Application Support/RED/data",
     socket: "/Users/me/Library/Application Support/RED/run/redd.sock",
+    ca_cert: "/Users/me/Library/Application Support/RED/data/certs/ca.pem",
   },
 };
 
@@ -42,6 +45,7 @@ describe("App", () => {
     expect(screen.getByText("pid 4242")).toBeInTheDocument();
     expect(screen.getByText(".test")).toBeInTheDocument();
     expect(screen.getByText("http://*.test:8180")).toBeInTheDocument();
+    expect(screen.getByText("https://*.test:8443")).toBeInTheDocument();
     expect(screen.getByText("2m 5s")).toBeInTheDocument();
   });
 

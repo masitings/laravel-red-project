@@ -26,6 +26,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(endpoints::SITES, get(list_sites))
         .route("/v1/sites/{name}", get(get_site))
         .route("/v1/sites/{name}/php", put(isolate).delete(unisolate))
+        .route("/v1/sites/{name}/secure", put(secure).delete(unsecure))
         .route(endpoints::PATHS, get(list_paths).post(park).delete(forget))
         .route(endpoints::LINKS, axum::routing::post(link))
         .route("/v1/links/{name}", delete(unlink))
@@ -46,10 +47,13 @@ async fn status(State(app): App) -> Json<StatusResponse> {
         uptime_secs: app.started.elapsed().as_secs(),
         tld: app.config.tld.clone(),
         http_port: app.http_port.get().copied(),
+        https_port: app.https_port.get().copied(),
+        dns_port: app.dns_port.get().copied(),
         paths: StatusPaths {
             config_dir: paths.config_dir.display().to_string(),
             data_dir: paths.data_dir.display().to_string(),
             socket: paths.socket().display().to_string(),
+            ca_cert: app.tls.ca_cert_path().display().to_string(),
         },
     })
 }
@@ -93,11 +97,29 @@ async fn unisolate(State(app): App, UrlPath(name): UrlPath<String>) -> ApiResult
     Ok(Json(site_info(&app, &app.state_snapshot(), &site)))
 }
 
+async fn secure(State(app): App, UrlPath(name): UrlPath<String>) -> ApiResult<SiteInfo> {
+    let state = app.state_snapshot();
+    let site = sites::find(&state, &name).ok_or_else(|| unknown_site(&name))?;
+    let expires = app.tls.issue(&site.name).map_err(internal)?;
+    app.update_state(|s| s.secured.insert(site.name.clone(), expires))
+        .map_err(internal)?;
+    Ok(Json(site_info(&app, &app.state_snapshot(), &site)))
+}
+
+async fn unsecure(State(app): App, UrlPath(name): UrlPath<String>) -> ApiResult<SiteInfo> {
+    let state = app.state_snapshot();
+    let site = sites::find(&state, &name).ok_or_else(|| unknown_site(&name))?;
+    app.update_state(|s| s.secured.remove(&site.name))
+        .map_err(internal)?;
+    app.tls.remove(&site.name);
+    Ok(Json(site_info(&app, &app.state_snapshot(), &site)))
+}
+
 fn site_info(app: &AppState, state: &red_core::State, site: &Site) -> SiteInfo {
     SiteInfo {
         name: site.name.clone(),
         path: site.path.display().to_string(),
-        url: app.site_url(&site.name),
+        url: app.site_url(state, &site.name),
         kind: match site.kind {
             SiteKind::Parked => red_api::SiteKind::Parked,
             SiteKind::Linked => red_api::SiteKind::Linked,
@@ -105,6 +127,8 @@ fn site_info(app: &AppState, state: &red_core::State, site: &Site) -> SiteInfo {
         driver: red_core::driver::detect(&site.path).name.to_owned(),
         php: app.effective_php(state, &site.name),
         isolated: state.isolated.contains_key(&site.name),
+        secure: state.secured.contains_key(&site.name),
+        cert_expires: state.secured.get(&site.name).copied(),
     }
 }
 

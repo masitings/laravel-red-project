@@ -9,6 +9,7 @@ pub mod driver;
 pub mod php;
 pub mod sites;
 pub mod state;
+pub mod time;
 
 pub use config::{Config, ConfigError};
 pub use sites::{Site, SiteKind};

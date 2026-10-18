@@ -4,9 +4,10 @@ A fast, open-source local PHP development environment for macOS and Linux.
 Park a folder, open `https://my-app.test`. No Docker, no hand-written vhosts.
 
 > **Status: M1 in progress.** RED serves parked and linked sites over HTTP
-> with per-site PHP versions (using the PHP-FPM already on your machine).
-> `.test` DNS, HTTPS and ports 80/443 come next; until then sites answer on
-> `http://<site>.localhost:8180`. See the [roadmap](#roadmap).
+> and HTTPS with per-site PHP versions (using the PHP-FPM already on your
+> machine), and resolves `*.test` with its own DNS responder. Ports 80/443
+> need the privileged helper, which comes next; until then sites answer on
+> ports 8180 (HTTP) and 8443 (HTTPS). See the [roadmap](#roadmap).
 
 ## Why
 
@@ -33,10 +34,19 @@ red php:list              # PHP versions found (Homebrew, system packages)
 red use 8.4               # default PHP for all sites
 red isolate 8.2           # pin the current site to PHP 8.2
 red unisolate
+
+red dns:install           # once: send *.test lookups to RED (uses sudo)
+red trust                 # once: trust RED's local CA (asks for your password)
+red secure                # serve the current site over HTTPS
+red secured               # secured sites and certificate expiry
 ```
 
-Until DNS lands, open sites at `http://<name>.localhost:8180` (browsers
-resolve `*.localhost` to your machine). Every command accepts `--json`.
+Until the helper lands, sites answer on `http://<name>.test:8180` and
+`https://<name>.test:8443`. `*.localhost` works without any DNS setup.
+Every command accepts `--json`.
+
+RED's CA is restricted (X.509 Name Constraints) to `.test` and
+`localhost`, so it cannot issue certificates for real domains.
 
 Supported out of the box: Laravel (and Statamic), Symfony, Craft, Drupal,
 WordPress, Bedrock, any project with `public/index.php`, plain PHP, and

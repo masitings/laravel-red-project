@@ -20,11 +20,18 @@ red-daemon = { path = "crates/red-daemon" }
 # async + http
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time", "fs", "io-util", "process"] }
 axum = { version = "0.8", default-features = false, features = ["json", "tokio", "http1", "query"] }
-hyper = { version = "1", features = ["client", "server", "http1"] }
-hyper-util = { version = "0.1", features = ["tokio", "server", "server-auto", "service", "http1"] }
+hyper = { version = "1", features = ["client", "server", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["tokio", "server", "server-auto", "service", "http1", "http2"] }
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
 tokio-util = "0.7"
+
+# tls (ring backend: no C toolchain or cmake needed)
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+rustls-pki-types = { version = "1", features = ["std"] }
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring", "pem"] }
+time = "0.3"
 
 # data
 serde = { version = "1", features = ["derive"] }

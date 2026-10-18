@@ -30,9 +30,17 @@ uptime_secs: number,
  */
 tld: string, 
 /**
- * Port the web server listens on, or `null` if it could not start.
+ * Port the HTTP server listens on, or `null` if it could not start.
  */
 http_port: number | null, 
+/**
+ * Port the HTTPS server listens on, or `null` if it could not start.
+ */
+https_port: number | null, 
+/**
+ * Loopback port of the DNS responder, or `null` if it could not start.
+ */
+dns_port: number | null, 
 /**
  * Where this installation keeps its files.
  */

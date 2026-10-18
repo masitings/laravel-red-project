@@ -21,7 +21,11 @@ struct Running {
 fn test_paths(home: &std::path::Path) -> Paths {
     let paths = Paths::under(home);
     std::fs::create_dir_all(&paths.config_dir).unwrap();
-    std::fs::write(paths.config_file(), "http_port = 0\n").unwrap();
+    std::fs::write(
+        paths.config_file(),
+        "http_port = 0\nhttps_port = 0\ndns_port = 0\n",
+    )
+    .unwrap();
     paths
 }
 

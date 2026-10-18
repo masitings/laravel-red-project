@@ -28,4 +28,12 @@ php: string | null,
 /**
  * `true` when the PHP version is pinned for this site.
  */
-isolated: boolean, };
+isolated: boolean, 
+/**
+ * `true` when the site is served over HTTPS.
+ */
+secure: boolean, 
+/**
+ * Expiry of the site's certificate (Unix time), when secured.
+ */
+cert_expires: number | null, };

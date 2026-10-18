@@ -21,6 +21,8 @@ pub struct State {
     pub isolated: BTreeMap<String, String>,
     /// PHP version used by sites that are not isolated.
     pub default_php: Option<String>,
+    /// Sites served over HTTPS, with their certificate's expiry (Unix time).
+    pub secured: BTreeMap<String, u64>,
 }
 
 /// Errors produced while reading or writing the state file.
@@ -129,6 +131,7 @@ mod tests {
         state.link("blog".into(), "/src/blog".into());
         state.isolated.insert("blog".into(), "8.2".into());
         state.default_php = Some("8.4".into());
+        state.secured.insert("blog".into(), 1_900_000_000);
         state.save(&path).unwrap();
 
         assert_eq!(State::load(&path).unwrap(), state);

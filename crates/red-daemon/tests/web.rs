@@ -55,7 +55,10 @@ echo json_encode([
 async fn start() -> Daemon {
     let home = tempfile::tempdir().unwrap();
     let paths = Paths::under(home.path().join("red"));
-    write(&paths.config_file(), "http_port = 0\n");
+    write(
+        &paths.config_file(),
+        "http_port = 0\nhttps_port = 0\ndns_port = 0\n",
+    );
 
     let sites = home.path().join("Sites");
     write(
