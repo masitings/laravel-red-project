@@ -20,8 +20,84 @@ pub struct StatusResponse {
     pub uptime_secs: u64,
     /// Top-level domain sites are served under.
     pub tld: String,
+    /// Port the web server listens on, or `null` if it could not start.
+    pub http_port: Option<u16>,
     /// Where this installation keeps its files.
     pub paths: StatusPaths,
+}
+
+/// How a site came to exist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum SiteKind {
+    /// A sub-directory of a parked path.
+    Parked,
+    /// Linked explicitly by name.
+    Linked,
+}
+
+/// One served site, as returned by `GET /v1/sites`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SiteInfo {
+    /// Site name; the site answers on `<name>.<tld>`.
+    pub name: String,
+    /// Project directory.
+    pub path: String,
+    /// URL to open the site in a browser.
+    pub url: String,
+    pub kind: SiteKind,
+    /// Detected framework driver, e.g. `laravel`.
+    pub driver: String,
+    /// PHP version (`"8.3"`) the site runs on, or `null` if none is installed.
+    pub php: Option<String>,
+    /// `true` when the PHP version is pinned for this site.
+    pub isolated: bool,
+}
+
+/// Body of `POST /v1/paths` and `POST /v1/links`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PathRequest {
+    /// Absolute directory path.
+    pub path: String,
+    /// Site name for links. Defaults to the directory name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub name: Option<String>,
+}
+
+/// Body of `PUT /v1/php/default` and `PUT /v1/sites/{name}/php`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PhpVersionRequest {
+    /// Minor version, e.g. `"8.3"`.
+    pub version: String,
+}
+
+/// One PHP installation RED found.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PhpInstallInfo {
+    /// Minor version, e.g. `"8.3"`.
+    pub version: String,
+    /// Full version, e.g. `"8.3.6"`.
+    pub full_version: String,
+    /// Path of the `php-fpm` binary.
+    pub fpm_path: String,
+    /// `true` while RED runs a PHP-FPM pool for this version.
+    pub running: bool,
+}
+
+/// Response of `GET /v1/php`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PhpListResponse {
+    /// Version used by sites that are not isolated.
+    pub default: Option<String>,
+    /// Installed versions, newest first.
+    pub installs: Vec<PhpInstallInfo>,
 }
 
 /// Directories reported by [`StatusResponse`].

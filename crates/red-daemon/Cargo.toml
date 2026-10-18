@@ -20,6 +20,9 @@ tokio.workspace = true
 axum.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
+http-body-util.workspace = true
+tokio-util.workspace = true
+mime_guess.workspace = true
 tower.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -31,6 +34,7 @@ tracing-subscriber.workspace = true
 [dev-dependencies]
 red-api = { workspace = true, features = ["client"] }
 tempfile.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

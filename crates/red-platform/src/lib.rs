@@ -4,6 +4,8 @@
 //! rest of the workspace can stay free of `cfg(target_os)` branches.
 
 pub mod paths;
+pub mod php;
+pub mod process;
 pub mod user;
 
 pub use paths::Paths;

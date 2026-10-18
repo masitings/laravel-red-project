@@ -17,6 +17,7 @@ const status: StatusResponse = {
   pid: 4242,
   uptime_secs: 125,
   tld: "test",
+  http_port: 8180,
   paths: {
     config_dir: "/Users/me/Library/Application Support/RED",
     data_dir: "/Users/me/Library/Application Support/RED/data",
@@ -40,6 +41,7 @@ describe("App", () => {
     expect(await screen.findByText("redd is running")).toBeInTheDocument();
     expect(screen.getByText("pid 4242")).toBeInTheDocument();
     expect(screen.getByText(".test")).toBeInTheDocument();
+    expect(screen.getByText("http://*.test:8180")).toBeInTheDocument();
     expect(screen.getByText("2m 5s")).toBeInTheDocument();
   });
 

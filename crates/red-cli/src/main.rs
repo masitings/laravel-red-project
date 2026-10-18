@@ -1,9 +1,14 @@
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
-use red_api::StatusResponse;
-use red_api::client::{Client, ClientError};
+use red_api::client::{Client, ClientError, Method};
+use red_api::{
+    PathRequest, PhpListResponse, PhpVersionRequest, SiteInfo, SiteKind, StatusResponse, endpoints,
+};
 use red_platform::Paths;
+use serde::Serialize;
 
 /// red: local PHP development environment.
 #[derive(Debug, Parser)]
@@ -21,6 +26,46 @@ struct Cli {
 enum Command {
     /// Show whether redd is running and where RED keeps its files.
     Status,
+    /// Serve every sub-directory of PATH (default: current directory) as a site.
+    Park { path: Option<PathBuf> },
+    /// Stop serving the sub-directories of PATH (default: current directory).
+    Forget { path: Option<PathBuf> },
+    /// List parked directories.
+    Paths,
+    /// Serve a directory under NAME (default: the directory's name).
+    Link {
+        name: Option<String>,
+        /// Directory to link (default: current directory).
+        #[arg(long)]
+        path: Option<PathBuf>,
+    },
+    /// Remove a link (default: the site in the current directory).
+    Unlink { name: Option<String> },
+    /// List all sites.
+    #[command(visible_alias = "links")]
+    Sites,
+    /// Show the site and driver serving the current directory.
+    Which,
+    /// List installed PHP versions.
+    #[command(name = "php:list")]
+    PhpList,
+    /// Set the PHP version used by sites that are not isolated.
+    Use {
+        #[arg(value_name = "VERSION")]
+        php: String,
+    },
+    /// Pin a site to a PHP version (default site: current directory).
+    Isolate {
+        #[arg(value_name = "VERSION")]
+        php: String,
+        #[arg(long)]
+        site: Option<String>,
+    },
+    /// Remove a site's PHP pin (default site: current directory).
+    Unisolate {
+        #[arg(long)]
+        site: Option<String>,
+    },
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -35,21 +80,229 @@ async fn main() -> ExitCode {
     }
 }
 
+struct Ctx<'a> {
+    cli: &'a Cli,
+    client: Client,
+}
+
+impl Ctx<'_> {
+    async fn send<B: Serialize, T: serde::de::DeserializeOwned>(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<&B>,
+    ) -> Result<T, ClientError> {
+        self.client.call(method, path, body).await
+    }
+
+    /// Print `value` as JSON when `--json` is set; otherwise run `text`.
+    fn output<T: Serialize>(&self, value: &T, text: impl FnOnce(&T)) -> anyhow::Result<()> {
+        if self.cli.json {
+            println!("{}", serde_json::to_string_pretty(value)?);
+        } else {
+            text(value);
+        }
+        Ok(())
+    }
+
+    /// The site whose directory is (or contains) the current directory.
+    async fn current_site(&self) -> anyhow::Result<SiteInfo> {
+        let cwd = cwd()?;
+        let sites: Vec<SiteInfo> = self.client.get(endpoints::SITES).await?;
+        site_containing(&sites, &cwd).cloned().with_context(|| {
+            format!(
+                "{} is not inside a site; pass a site name or run `red link` here",
+                cwd.display()
+            )
+        })
+    }
+
+    async fn site_name(&self, name: &Option<String>) -> anyhow::Result<String> {
+        match name {
+            Some(name) => Ok(name.clone()),
+            None => Ok(self.current_site().await?.name),
+        }
+    }
+}
+
 async fn run(cli: &Cli) -> anyhow::Result<()> {
     let paths = Paths::discover()?;
-    let client = Client::new(paths.socket());
+    let ctx = Ctx {
+        cli,
+        client: Client::new(paths.socket()),
+    };
 
-    match cli.command {
+    match &cli.command {
         Command::Status => {
-            let status = client.status().await?;
-            if cli.json {
-                println!("{}", serde_json::to_string_pretty(&status)?);
-            } else {
-                print_status(&status);
-            }
+            let status = ctx.client.status().await?;
+            ctx.output(&status, print_status)?;
+        }
+        Command::Park { path } => {
+            let dir = absolute_dir(path.as_deref())?;
+            let parked: Vec<String> = ctx
+                .send(
+                    Method::POST,
+                    endpoints::PATHS,
+                    Some(&path_request(&dir, None)),
+                )
+                .await?;
+            ctx.output(&parked, |_| {
+                println!(
+                    "Parked {}. Its sub-directories are now sites.",
+                    dir.display()
+                );
+            })?;
+        }
+        Command::Forget { path } => {
+            let dir = absolute_dir(path.as_deref())?;
+            let parked: Vec<String> = ctx
+                .send(
+                    Method::DELETE,
+                    endpoints::PATHS,
+                    Some(&path_request(&dir, None)),
+                )
+                .await?;
+            ctx.output(&parked, |_| println!("Forgot {}.", dir.display()))?;
+        }
+        Command::Paths => {
+            let parked: Vec<String> = ctx.client.get(endpoints::PATHS).await?;
+            ctx.output(&parked, |parked| {
+                if parked.is_empty() {
+                    println!("No parked directories. Run `red park` in a directory of projects.");
+                }
+                for path in parked {
+                    println!("{path}");
+                }
+            })?;
+        }
+        Command::Link { name, path } => {
+            let dir = absolute_dir(path.as_deref())?;
+            let site: SiteInfo = ctx
+                .send(
+                    Method::POST,
+                    endpoints::LINKS,
+                    Some(&path_request(&dir, name.clone())),
+                )
+                .await?;
+            ctx.output(&site, |site| {
+                println!("Linked {} → {}", site.url, site.path);
+            })?;
+        }
+        Command::Unlink { name } => {
+            let name = ctx.site_name(name).await?;
+            let _: serde_json::Value = ctx
+                .send(Method::DELETE, &endpoints::link(&name), None::<&()>)
+                .await?;
+            ctx.output(&serde_json::json!({ "unlinked": name }), |_| {
+                println!("Unlinked {name}.");
+            })?;
+        }
+        Command::Sites => {
+            let sites: Vec<SiteInfo> = ctx.client.get(endpoints::SITES).await?;
+            ctx.output(&sites, |s| print_sites(s))?;
+        }
+        Command::Which => {
+            let site = ctx.current_site().await?;
+            ctx.output(&site, |site| {
+                println!(
+                    "{} is served by the {} driver at {}",
+                    site.path, site.driver, site.url
+                );
+            })?;
+        }
+        Command::PhpList => {
+            let list: PhpListResponse = ctx.client.get(endpoints::PHP).await?;
+            ctx.output(&list, print_php)?;
+        }
+        Command::Use { php } => {
+            let list: PhpListResponse = ctx
+                .send(
+                    Method::PUT,
+                    endpoints::PHP_DEFAULT,
+                    Some(&PhpVersionRequest {
+                        version: php.clone(),
+                    }),
+                )
+                .await?;
+            ctx.output(&list, |list| {
+                println!(
+                    "Sites that are not isolated now use PHP {}.",
+                    list.default.as_deref().unwrap_or("?")
+                );
+            })?;
+        }
+        Command::Isolate { php, site } => {
+            let name = ctx.site_name(site).await?;
+            let site: SiteInfo = ctx
+                .send(
+                    Method::PUT,
+                    &endpoints::site_php(&name),
+                    Some(&PhpVersionRequest {
+                        version: php.clone(),
+                    }),
+                )
+                .await?;
+            ctx.output(&site, |site| {
+                println!(
+                    "{} now uses PHP {}.",
+                    site.name,
+                    site.php.as_deref().unwrap_or("?")
+                );
+            })?;
+        }
+        Command::Unisolate { site } => {
+            let name = ctx.site_name(site).await?;
+            let site: SiteInfo = ctx
+                .send(Method::DELETE, &endpoints::site_php(&name), None::<&()>)
+                .await?;
+            ctx.output(&site, |site| {
+                println!(
+                    "{} follows the default PHP again ({}).",
+                    site.name,
+                    site.php.as_deref().unwrap_or("none installed")
+                );
+            })?;
         }
     }
     Ok(())
+}
+
+fn path_request(dir: &Path, name: Option<String>) -> PathRequest {
+    PathRequest {
+        path: dir.display().to_string(),
+        name,
+    }
+}
+
+fn cwd() -> anyhow::Result<PathBuf> {
+    std::env::current_dir().context("cannot read the current directory")
+}
+
+/// `path` (or the current directory) as an absolute, canonical directory.
+fn absolute_dir(path: Option<&Path>) -> anyhow::Result<PathBuf> {
+    let path = match path {
+        Some(path) => path.to_owned(),
+        None => cwd()?,
+    };
+    let dir = path
+        .canonicalize()
+        .with_context(|| format!("{} does not exist", path.display()))?;
+    if !dir.is_dir() {
+        bail!("{} is not a directory", dir.display());
+    }
+    Ok(dir)
+}
+
+/// The site whose path is `dir` or an ancestor of it (deepest match wins).
+fn site_containing<'a>(sites: &'a [SiteInfo], dir: &Path) -> Option<&'a SiteInfo> {
+    sites
+        .iter()
+        .filter(|site| {
+            let path = Path::new(&site.path);
+            let path = path.canonicalize().unwrap_or_else(|_| path.to_owned());
+            dir.starts_with(path)
+        })
+        .max_by_key(|site| site.path.len())
 }
 
 fn print_status(status: &StatusResponse) {
@@ -62,10 +315,92 @@ fn print_status(status: &StatusResponse) {
         "version  {} (API v{}, {})",
         status.version, status.api_version, status.os
     );
-    println!("tld      .{}", status.tld);
+    match status.http_port {
+        Some(port) => println!("web      http://*.{}:{port}", status.tld),
+        None => println!("web      not running (see the redd log)"),
+    }
     println!("config   {}", status.paths.config_dir);
     println!("data     {}", status.paths.data_dir);
     println!("socket   {}", status.paths.socket);
+}
+
+fn print_sites(sites: &[SiteInfo]) {
+    if sites.is_empty() {
+        println!(
+            "No sites yet. Run `red park` in a directory of projects, or `red link` in one project."
+        );
+        return;
+    }
+    let rows: Vec<[String; 5]> = sites
+        .iter()
+        .map(|s| {
+            let php = match (&s.php, s.isolated) {
+                (Some(v), true) => format!("{v} (isolated)"),
+                (Some(v), false) => v.clone(),
+                (None, _) => "-".into(),
+            };
+            let kind = match s.kind {
+                SiteKind::Parked => "parked",
+                SiteKind::Linked => "linked",
+            };
+            [
+                s.url.clone(),
+                s.driver.clone(),
+                php,
+                kind.into(),
+                s.path.clone(),
+            ]
+        })
+        .collect();
+    print_table(&["URL", "DRIVER", "PHP", "KIND", "PATH"], &rows);
+}
+
+fn print_php(list: &PhpListResponse) {
+    if list.installs.is_empty() {
+        println!("No PHP found. Install one, for example `brew install php`, then run this again.");
+        return;
+    }
+    let rows: Vec<[String; 4]> = list
+        .installs
+        .iter()
+        .map(|i| {
+            let mut marks = Vec::new();
+            if list.default.as_deref() == Some(i.version.as_str()) {
+                marks.push("default");
+            }
+            if i.running {
+                marks.push("running");
+            }
+            [
+                i.version.clone(),
+                i.full_version.clone(),
+                marks.join(", "),
+                i.fpm_path.clone(),
+            ]
+        })
+        .collect();
+    print_table(&["VERSION", "FULL", "", "PHP-FPM"], &rows);
+}
+
+fn print_table<const N: usize>(header: &[&str; N], rows: &[[String; N]]) {
+    let mut widths = header.map(str::len);
+    for row in rows {
+        for (width, cell) in widths.iter_mut().zip(row) {
+            *width = (*width).max(cell.chars().count());
+        }
+    }
+    let line = |cells: Vec<&str>| {
+        let parts: Vec<String> = cells
+            .iter()
+            .zip(widths)
+            .map(|(cell, width)| format!("{cell:<width$}"))
+            .collect();
+        println!("{}", parts.join("  ").trim_end());
+    };
+    line(header.to_vec());
+    for row in rows {
+        line(row.iter().map(String::as_str).collect());
+    }
 }
 
 fn uptime(secs: u64) -> String {
@@ -110,5 +445,31 @@ mod tests {
         Cli::command().debug_assert();
         let cli = Cli::try_parse_from(["red", "status", "--json"]).unwrap();
         assert!(cli.json);
+        let cli = Cli::try_parse_from(["red", "isolate", "8.3", "--site", "blog"]).unwrap();
+        assert!(matches!(cli.command, Command::Isolate { .. }));
+        assert!(Cli::try_parse_from(["red", "php:list"]).is_ok());
+        assert!(Cli::try_parse_from(["red", "use", "8.4"]).is_ok());
+        assert!(Cli::try_parse_from(["red", "--version"]).is_err()); // prints version
+        assert!(Cli::try_parse_from(["red", "links"]).is_ok());
+    }
+
+    #[test]
+    fn finds_the_deepest_site_containing_a_directory() {
+        let site = |name: &str, path: &str| SiteInfo {
+            name: name.into(),
+            path: path.into(),
+            url: String::new(),
+            kind: SiteKind::Linked,
+            driver: "php".into(),
+            php: None,
+            isolated: false,
+        };
+        let sites = vec![
+            site("mono", "/nonexistent/mono"),
+            site("api", "/nonexistent/mono/api"),
+        ];
+        let found = site_containing(&sites, Path::new("/nonexistent/mono/api/src"));
+        assert_eq!(found.map(|s| s.name.as_str()), Some("api"));
+        assert!(site_containing(&sites, Path::new("/elsewhere")).is_none());
     }
 }

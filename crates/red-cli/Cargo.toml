@@ -17,6 +17,7 @@ red-platform.workspace = true
 
 tokio.workspace = true
 clap.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
 

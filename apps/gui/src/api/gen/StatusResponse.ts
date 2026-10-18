@@ -30,6 +30,10 @@ uptime_secs: number,
  */
 tld: string, 
 /**
+ * Port the web server listens on, or `null` if it could not start.
+ */
+http_port: number | null, 
+/**
  * Where this installation keeps its files.
  */
 paths: StatusPaths, };

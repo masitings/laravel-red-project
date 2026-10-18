@@ -6,6 +6,7 @@ use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
 use hyper::{Request, StatusCode};
 use hyper_util::rt::TokioIo;
+use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tokio::net::UnixStream;
 
@@ -30,7 +31,7 @@ pub enum ClientError {
     #[error("invalid request: {0}")]
     Request(#[from] hyper::http::Error),
     /// The daemon answered with an error body.
-    #[error("{error}")]
+    #[error("{}", error.message)]
     Api { status: u16, error: ApiError },
     #[error("unexpected response from redd: {0}")]
     Decode(#[from] serde_json::Error),
@@ -60,7 +61,18 @@ impl Client {
 
     /// `GET` a path and decode the JSON response.
     pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, ClientError> {
-        let value = self.request(Method::GET, path, None).await?;
+        self.call(Method::GET, path, None::<&()>).await
+    }
+
+    /// Send `body` as JSON with `method` and decode the JSON response.
+    pub async fn call<B: Serialize, T: DeserializeOwned>(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<&B>,
+    ) -> Result<T, ClientError> {
+        let body = body.map(serde_json::to_value).transpose()?;
+        let value = self.request(method, path, body).await?;
         Ok(serde_json::from_value(value)?)
     }
 

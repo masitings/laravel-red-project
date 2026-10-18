@@ -19,4 +19,30 @@ pub const API_VERSION: u32 = 1;
 pub mod endpoints {
     /// `GET`: daemon status, see [`crate::StatusResponse`].
     pub const STATUS: &str = "/v1/status";
+    /// `GET`: all sites. `GET /v1/sites/{name}`: one site.
+    /// `PUT`/`DELETE /v1/sites/{name}/php`: isolate / unisolate.
+    pub const SITES: &str = "/v1/sites";
+    /// `GET`: parked paths. `POST`: park. `DELETE` (with a JSON body): forget.
+    pub const PATHS: &str = "/v1/paths";
+    /// `POST`: link a directory. `DELETE /v1/links/{name}`: unlink.
+    pub const LINKS: &str = "/v1/links";
+    /// `GET`: installed PHP versions.
+    pub const PHP: &str = "/v1/php";
+    /// `PUT`: change the default PHP version.
+    pub const PHP_DEFAULT: &str = "/v1/php/default";
+
+    /// `/v1/sites/{name}`
+    pub fn site(name: &str) -> String {
+        format!("{SITES}/{name}")
+    }
+
+    /// `/v1/sites/{name}/php`
+    pub fn site_php(name: &str) -> String {
+        format!("{SITES}/{name}/php")
+    }
+
+    /// `/v1/links/{name}`
+    pub fn link(name: &str) -> String {
+        format!("{LINKS}/{name}")
+    }
 }

@@ -18,17 +18,20 @@ red-platform = { path = "crates/red-platform" }
 red-daemon = { path = "crates/red-daemon" }
 
 # async + http
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time", "fs", "io-util"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time", "fs", "io-util", "process"] }
 axum = { version = "0.8", default-features = false, features = ["json", "tokio", "http1", "query"] }
 hyper = { version = "1", features = ["client", "server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio", "server", "server-auto", "service", "http1"] }
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
+tokio-util = "0.7"
 
 # data
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.9"
+percent-encoding = "2"
+mime_guess = "2"
 ts-rs = { version = "11", features = ["serde-compat"] }
 
 # cli + diagnostics

@@ -35,6 +35,7 @@ function Online({ status }: { status: StatusResponse }) {
     ["Version", `${status.version} (API v${status.api_version}, ${status.os})`],
     ["Uptime", formatUptime(status.uptime_secs)],
     ["TLD", `.${status.tld}`],
+    ["Web", webAddress(status)],
     ["Config", status.paths.config_dir],
     ["Data", status.paths.data_dir],
     ["Socket", status.paths.socket],
@@ -73,6 +74,12 @@ function Offline({ error }: { error: Error }) {
       {hint && <p className="mt-2 text-sm text-stone-600 dark:text-stone-400">{hint}</p>}
     </section>
   );
+}
+
+function webAddress(status: StatusResponse): string {
+  if (status.http_port === null) return "not running";
+  const port = status.http_port === 80 ? "" : `:${status.http_port}`;
+  return `http://*.${status.tld}${port}`;
 }
 
 export function formatUptime(secs: number): string {

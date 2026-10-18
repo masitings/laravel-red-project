@@ -1,7 +1,8 @@
 //! Global, user-editable configuration (`config.toml`).
 //!
 //! The file is optional: a missing file means "all defaults". RED never
-//! rewrites this file on its own; machine-managed state lives elsewhere.
+//! rewrites this file on its own; state that commands change (parked paths,
+//! links, PHP choices) lives in [`crate::State`] instead.
 
 use std::path::{Path, PathBuf};
 
@@ -10,24 +11,28 @@ use serde::{Deserialize, Serialize};
 /// Top-level domain used when none is configured. Reserved by RFC 6761.
 pub const DEFAULT_TLD: &str = "test";
 
+/// Port the web server listens on when none is configured.
+pub const DEFAULT_HTTP_PORT: u16 = 80;
+
+/// Port used instead of [`DEFAULT_HTTP_PORT`] when RED cannot bind a
+/// privileged port (no helper installed yet).
+pub const FALLBACK_HTTP_PORT: u16 = 8180;
+
 /// Contents of `config.toml`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     /// Top-level domain sites are served under, without the leading dot.
     pub tld: String,
-    /// Directories whose sub-directories are each served as a site.
-    pub parked_paths: Vec<PathBuf>,
-    /// PHP version used by sites that are not isolated, e.g. `"8.4"`.
-    pub default_php: Option<String>,
+    /// Port for plain HTTP. `0` picks a free port (used by tests).
+    pub http_port: u16,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             tld: DEFAULT_TLD.to_owned(),
-            parked_paths: Vec::new(),
-            default_php: None,
+            http_port: DEFAULT_HTTP_PORT,
         }
     }
 }
@@ -107,6 +112,7 @@ mod tests {
         let config = Config::load(&dir.path().join("config.toml")).unwrap();
         assert_eq!(config, Config::default());
         assert_eq!(config.tld, "test");
+        assert_eq!(config.http_port, 80);
     }
 
     #[test]
@@ -114,14 +120,12 @@ mod tests {
         let config = Config::parse(
             r#"
             tld = "localhost"
-            parked_paths = ["/Users/me/Sites"]
-            default_php = "8.4"
+            http_port = 8080
             "#,
         )
         .unwrap();
         assert_eq!(config.tld, "localhost");
-        assert_eq!(config.parked_paths, vec![PathBuf::from("/Users/me/Sites")]);
-        assert_eq!(config.default_php.as_deref(), Some("8.4"));
+        assert_eq!(config.http_port, 8080);
     }
 
     #[test]

@@ -16,9 +16,18 @@ struct Running {
     _home: tempfile::TempDir,
 }
 
+/// Paths under `home`, with a config that lets the OS pick the web port so
+/// tests can run in parallel (and as root) without fighting over port 80.
+fn test_paths(home: &std::path::Path) -> Paths {
+    let paths = Paths::under(home);
+    std::fs::create_dir_all(&paths.config_dir).unwrap();
+    std::fs::write(paths.config_file(), "http_port = 0\n").unwrap();
+    paths
+}
+
 async fn start() -> Running {
     let home = tempfile::tempdir().unwrap();
-    let paths = Paths::under(home.path());
+    let paths = test_paths(home.path());
     let (stop, stopped) = oneshot::channel::<()>();
     let task = tokio::spawn(red_daemon::run(paths.clone(), async {
         let _ = stopped.await;
@@ -112,7 +121,7 @@ async fn socket_is_private_and_removed_on_shutdown() {
 #[tokio::test]
 async fn stale_socket_is_replaced() {
     let home = tempfile::tempdir().unwrap();
-    let paths = Paths::under(home.path());
+    let paths = test_paths(home.path());
     std::fs::create_dir_all(&paths.run_dir).unwrap();
     // A socket file nobody listens on, as left behind by a crash.
     drop(std::os::unix::net::UnixListener::bind(paths.socket()).unwrap());

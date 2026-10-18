@@ -109,6 +109,21 @@ impl Paths {
     pub fn config_file(&self) -> PathBuf {
         self.config_dir.join("config.toml")
     }
+
+    /// Path of the machine-managed state file.
+    pub fn state_file(&self) -> PathBuf {
+        self.data_dir.join("state.json")
+    }
+
+    /// Directory holding the generated PHP-FPM configuration for `version`.
+    pub fn php_dir(&self, version: &str) -> PathBuf {
+        self.data_dir.join("php").join(version)
+    }
+
+    /// FastCGI socket of the PHP-FPM pool for `version`.
+    pub fn php_socket(&self, version: &str) -> PathBuf {
+        self.run_dir.join(format!("php{version}.sock"))
+    }
 }
 
 #[cfg(test)]

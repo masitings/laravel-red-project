@@ -3,10 +3,10 @@
 A fast, open-source local PHP development environment for macOS and Linux.
 Park a folder, open `https://my-app.test`. No Docker, no hand-written vhosts.
 
-> **Status: M0 (foundation).** The daemon, CLI and GUI talk to each other
-> through the Control API, but RED does not serve sites yet. Serving sites
-> over HTTPS with per-site PHP versions arrives in M1 (v0.1.0). See the
-> [roadmap](#roadmap).
+> **Status: M1 in progress.** RED serves parked and linked sites over HTTP
+> with per-site PHP versions (using the PHP-FPM already on your machine).
+> `.test` DNS, HTTPS and ports 80/443 come next; until then sites answer on
+> `http://<site>.localhost:8180`. See the [roadmap](#roadmap).
 
 ## Why
 
@@ -18,6 +18,29 @@ Park a folder, open `https://my-app.test`. No Docker, no hand-written vhosts.
   Linux support doesn't mean a rewrite.
 - **Scriptable.** Everything the GUI does goes through the same Control API
   as the `red` CLI, and every command can print JSON.
+
+## Usage
+
+```sh
+redd                      # start the daemon (normally launchd/systemd does this)
+
+cd ~/Sites && red park    # every sub-directory becomes <name>.test
+cd ~/code/shop && red link             # or link a single project
+red sites                 # URL, driver, PHP version, path
+red which                 # which site and driver serve this directory
+
+red php:list              # PHP versions found (Homebrew, system packages)
+red use 8.4               # default PHP for all sites
+red isolate 8.2           # pin the current site to PHP 8.2
+red unisolate
+```
+
+Until DNS lands, open sites at `http://<name>.localhost:8180` (browsers
+resolve `*.localhost` to your machine). Every command accepts `--json`.
+
+Supported out of the box: Laravel (and Statamic), Symfony, Craft, Drupal,
+WordPress, Bedrock, any project with `public/index.php`, plain PHP, and
+static sites.
 
 ## Architecture
 
