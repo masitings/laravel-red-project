@@ -6,12 +6,16 @@
 
 pub mod config;
 pub mod driver;
+pub mod logs;
 pub mod php;
+pub mod project;
+pub mod services;
 pub mod sites;
 pub mod state;
 pub mod time;
 
 pub use config::{Config, ConfigError};
+pub use services::{ServiceConfig, ServiceKind};
 pub use sites::{Site, SiteKind};
 pub use state::{State, StateError};
 

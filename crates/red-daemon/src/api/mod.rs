@@ -16,8 +16,13 @@ use red_core::{Site, SiteKind, sites};
 
 use crate::AppState;
 
-type App = State<Arc<AppState>>;
-type ApiResult<T> = Result<Json<T>, ApiResponse>;
+mod dumps;
+mod logs;
+mod mail;
+mod services;
+
+pub(crate) type App = State<Arc<AppState>>;
+pub(crate) type ApiResult<T> = Result<Json<T>, ApiResponse>;
 
 /// Build the Control API router.
 pub fn router(state: Arc<AppState>) -> Router {
@@ -44,6 +49,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route(endpoints::PHP, get(list_php))
         .route(endpoints::PHP_DEFAULT, put(set_default_php))
+        .merge(services::routes())
+        .merge(mail::routes())
+        .merge(dumps::routes())
+        .merge(logs::routes())
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
         .with_state(state)
@@ -62,6 +71,8 @@ async fn status(State(app): App) -> Json<StatusResponse> {
         https_port: app.https_port.get().copied(),
         dns_port: app.dns_port.get().copied(),
         helper: app.via_helper.load(std::sync::atomic::Ordering::Relaxed),
+        smtp_port: app.smtp_port.get().copied(),
+        dump_port: app.dump_port.get().copied(),
         paths: StatusPaths {
             config_dir: paths.config_dir.display().to_string(),
             data_dir: paths.data_dir.display().to_string(),
@@ -214,7 +225,7 @@ fn site_info(app: &AppState, state: &red_core::State, site: &Site) -> SiteInfo {
             SiteKind::Linked => red_api::SiteKind::Linked,
         },
         driver: red_core::driver::detect(&site.path).name.to_owned(),
-        php: app.effective_php(state, &site.name),
+        php: app.effective_php(state, site),
         isolated: state.isolated.contains_key(&site.name),
         secure: state.secured.contains_key(&site.name),
         cert_expires: state.secured.get(&site.name).copied(),
@@ -490,7 +501,7 @@ impl From<ApiError> for ApiResponse {
     }
 }
 
-fn bad_request(message: String) -> ApiError {
+pub(crate) fn bad_request(message: String) -> ApiError {
     ApiError::new(ErrorCode::BadRequest, message)
 }
 
@@ -502,7 +513,7 @@ fn unknown_site(name: &str) -> ApiResponse {
     )
 }
 
-fn internal(err: impl std::fmt::Display) -> ApiResponse {
+pub(crate) fn internal(err: impl std::fmt::Display) -> ApiResponse {
     tracing::error!(%err, "request failed");
     ApiResponse(
         StatusCode::INTERNAL_SERVER_ERROR,

@@ -21,6 +21,13 @@ status:
 gui:
     cd {{gui}} && pnpm tauri dev
 
+# Build RED.app (macOS) or the Linux packages, with red, redd and red-helper inside
+bundle:
+    cargo build --release -p red-cli -p red-daemon -p red-helper
+    mkdir -p {{gui}}/src-tauri/binaries
+    for bin in red redd red-helper; do cp target/release/$bin {{gui}}/src-tauri/binaries/$bin-$(rustc -vV | sed -n 's/^host: //p'); done
+    cd {{gui}} && pnpm tauri build --config src-tauri/tauri.bundle.conf.json
+
 # Regenerate TypeScript types from crates/red-api
 gen-types:
     cargo test -p red-api export_bindings

@@ -3,5 +3,6 @@
   "identifier": "default",
   "description": "Permissions for the main RED window",
   "windows": ["main"],
-  "permissions": ["core:default", "core:event:default", "dialog:allow-open", "opener:default"]
+  "permissions": ["core:default", "core:event:default", "dialog:allow-open",
+    "dialog:allow-save", "opener:default"]
 }

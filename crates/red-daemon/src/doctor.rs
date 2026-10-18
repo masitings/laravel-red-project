@@ -31,7 +31,41 @@ pub async fn run(app: &AppState) -> DoctorReport {
     checks.push(ca_trust(app).await);
     checks.push(helper(app).await);
     checks.push(autostart());
+    if let Some(services) = services(app) {
+        checks.push(services);
+    }
     DoctorReport { checks }
+}
+
+/// Services that failed to start. Omitted when no service is configured.
+fn services(app: &AppState) -> Option<Check> {
+    let state = app.state_snapshot();
+    if state.services.is_empty() {
+        return None;
+    }
+    let failed: Vec<String> = state
+        .services
+        .keys()
+        .filter(|name| app.services.runtime(name).status == red_api::ServiceStatus::Failed)
+        .cloned()
+        .collect();
+    Some(if failed.is_empty() {
+        check(
+            "services",
+            "Services",
+            CheckStatus::Ok,
+            format!("{} configured, none failed", state.services.len()),
+            None,
+        )
+    } else {
+        check(
+            "services",
+            "Services",
+            CheckStatus::Warn,
+            format!("failed: {}", failed.join(", ")),
+            Some("see `red services`, then `red services:restart <name>`"),
+        )
+    })
 }
 
 fn php(app: &AppState) -> Check {

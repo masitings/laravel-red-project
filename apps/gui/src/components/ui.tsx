@@ -1,4 +1,4 @@
-import type { ButtonHTMLAttributes, ReactNode } from "react";
+import { type ButtonHTMLAttributes, type ReactNode, useRef } from "react";
 import { RedApiError } from "../api/client";
 
 export function Button({
@@ -68,4 +68,48 @@ export function ErrorNote({ error }: { error: unknown }) {
       {hint && <span className="text-stone-500"> — {hint}</span>}
     </p>
   );
+}
+
+/**
+ * Untrusted HTML (mail bodies, rendered dumps) in a sandboxed frame: no
+ * scripts, forms or navigation, and the app's CSP blocks remote content.
+ * Same-origin is allowed only so the frame can be sized to its content.
+ */
+export function HtmlFrame({
+  html,
+  title,
+  minHeight = 40,
+  fill = false,
+  css = "",
+}: {
+  html: string;
+  title: string;
+  minHeight?: number;
+  fill?: boolean;
+  /** Extra CSS for the frame's document, e.g. its background. */
+  css?: string;
+}) {
+  const frame = useRef<HTMLIFrameElement>(null);
+  const fit = () => {
+    const doc = frame.current?.contentDocument;
+    if (!fill && frame.current && doc?.documentElement) {
+      frame.current.style.height = `${Math.max(minHeight, doc.documentElement.scrollHeight)}px`;
+    }
+  };
+  return (
+    <iframe
+      ref={frame}
+      title={title}
+      sandbox="allow-same-origin"
+      srcDoc={css ? `<style>${css}</style>${html}` : html}
+      onLoad={fit}
+      className={`w-full rounded border-0 ${css ? "" : "bg-white"} ${fill ? "h-full" : ""}`}
+      style={fill ? undefined : { height: minHeight }}
+    />
+  );
+}
+
+/** A Unix time (seconds) in the user's locale. */
+export function formatTime(unixSeconds: number): string {
+  return new Date(unixSeconds * 1000).toLocaleString();
 }

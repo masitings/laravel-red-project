@@ -11,6 +11,9 @@ use crate::system::run;
 /// A binary installed next to the running `red`, e.g. `redd` or `red-helper`.
 pub fn sibling_binary(name: &str) -> anyhow::Result<std::path::PathBuf> {
     let exe = std::env::current_exe().context("cannot locate the red binary")?;
+    // `red` may be a symlink (e.g. ~/.local/bin/red → RED.app); the other
+    // binaries sit next to the real file.
+    let exe = exe.canonicalize().unwrap_or(exe);
     let path = exe.with_file_name(name);
     if !path.is_file() {
         bail!(

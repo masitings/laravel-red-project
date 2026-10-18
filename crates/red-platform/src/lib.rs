@@ -3,6 +3,7 @@
 //! Everything that differs between macOS and Linux lives in this crate so the
 //! rest of the workspace can stay free of `cfg(target_os)` branches.
 
+pub mod binaries;
 pub mod paths;
 pub mod php;
 pub mod process;

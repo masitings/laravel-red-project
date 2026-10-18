@@ -51,9 +51,58 @@ jobs:
           name: ${{ matrix.target }}
           path: dist/*.tar.gz*
 
+  app:
+    name: Desktop app (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain and target
+        run: |
+          rustup toolchain install
+          rustup target add ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: app-${{ matrix.target }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/gui/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: apps/gui
+      - name: Build the bundled CLI, daemon and helper
+        run: |
+          cargo build --release --locked --target ${{ matrix.target }} -p red-cli -p red-daemon -p red-helper
+          mkdir -p apps/gui/src-tauri/binaries
+          for bin in red redd red-helper; do
+            cp "target/${{ matrix.target }}/release/$bin" "apps/gui/src-tauri/binaries/$bin-${{ matrix.target }}"
+          done
+      - name: Build RED.app and the disk image
+        working-directory: apps/gui
+        run: pnpm tauri build --target ${{ matrix.target }} --bundles app,dmg --config src-tauri/tauri.bundle.conf.json
+      - name: Collect the disk image
+        shell: bash
+        run: |
+          mkdir -p dist
+          arch="${{ matrix.target }}"; arch="${arch%%-*}"
+          dmg=$(ls target/${{ matrix.target }}/release/bundle/dmg/*.dmg | head -1)
+          cp "$dmg" "dist/RED-${GITHUB_REF_NAME}-macos-$arch.dmg"
+          (cd dist && shasum -a 256 *.dmg > "RED-${GITHUB_REF_NAME}-macos-$arch.dmg.sha256")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-${{ matrix.target }}
+          path: dist/*
+
   release:
     name: Publish release
-    needs: build
+    needs: [build, app]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4

@@ -9,9 +9,12 @@ pub mod api;
 pub mod body;
 pub mod dns;
 pub mod doctor;
+pub mod dumps;
 pub mod fastcgi;
 pub mod fpm;
+pub mod mail;
 pub mod proxy;
+pub mod services;
 pub mod socket;
 pub mod tls;
 pub mod web;
@@ -78,10 +81,25 @@ pub struct AppState {
     pub via_helper: std::sync::atomic::AtomicBool,
     /// Where the helper listens.
     pub helper_socket: std::path::PathBuf,
+    /// Database and cache services.
+    pub services: services::ServiceManager,
+    /// Captured `dump()` output.
+    pub dumps: Arc<dumps::Dumps>,
+    /// Caught mail.
+    pub mail: Arc<mail::MailStore>,
+    /// Port of the mail catcher, once bound.
+    pub smtp_port: OnceLock<u16>,
+    /// Port of the dump server, once bound.
+    pub dump_port: OnceLock<u16>,
     /// Change notifications for `GET /v1/events` subscribers.
     pub events: tokio::sync::broadcast::Sender<red_api::Event>,
     state: RwLock<State>,
+    /// `php` from projects' `red.toml`, keyed by file, with its mtime.
+    project_php: std::sync::Mutex<ProjectPhpCache>,
 }
+
+type ProjectPhpCache =
+    std::collections::HashMap<std::path::PathBuf, (Option<std::time::SystemTime>, Option<String>)>;
 
 impl AppState {
     /// Tell event subscribers that something changed. Having no
@@ -111,15 +129,59 @@ impl AppState {
         Ok(result)
     }
 
-    /// PHP version for `site`: pinned, else the default, else the newest
+    /// PHP version for `site`: pinned with `red isolate`, else `php` in
+    /// the project's `red.toml`, else the default, else the newest
     /// installed version.
-    pub fn effective_php(&self, state: &State, site: &str) -> Option<String> {
+    pub fn effective_php(&self, state: &State, site: &red_core::Site) -> Option<String> {
         state
             .isolated
-            .get(site)
+            .get(&site.name)
             .cloned()
+            .or_else(|| self.project_php(&site.path))
             .or_else(|| state.default_php.clone())
             .or_else(|| self.php.newest())
+    }
+
+    /// `php` from `<dir>/red.toml`, cached until the file changes.
+    fn project_php(&self, dir: &std::path::Path) -> Option<String> {
+        let path = dir.join(red_core::project::FILE_NAME);
+        let modified = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+        let mut cache = self.project_php.lock().expect("project cache poisoned");
+        if let Some((seen, php)) = cache.get(&path)
+            && *seen == modified
+        {
+            return php.clone();
+        }
+        let php = modified.and_then(|_| match red_core::project::ProjectConfig::load(dir) {
+            Ok(config) => config
+                .and_then(|c| c.php)
+                .and_then(|v| red_core::php::minor_version(&v)),
+            Err(err) => {
+                tracing::warn!(%err, "ignoring red.toml");
+                None
+            }
+        });
+        if cache.len() > 4096 {
+            cache.clear();
+        }
+        cache.insert(path, (modified, php.clone()));
+        php
+    }
+
+    /// PHP CLI binaries, newest PHP first, then `php` on `PATH`.
+    pub fn php_cli_binaries(&self) -> Vec<std::path::PathBuf> {
+        let mut found: Vec<std::path::PathBuf> = self
+            .php
+            .installs()
+            .iter()
+            .filter_map(|i| red_platform::binaries::php_cli_for_fpm(&i.fpm))
+            .collect();
+        for php in red_platform::binaries::in_path("php") {
+            if !found.contains(&php) {
+                found.push(php);
+            }
+        }
+        found
     }
 
     /// Browser URL for a site: HTTPS when it is secured and the HTTPS
@@ -173,6 +235,11 @@ pub async fn run(paths: Paths, shutdown: impl Future<Output = ()>) -> Result<(),
     let (events, _) = tokio::sync::broadcast::channel(64);
     let app = Arc::new(AppState {
         php: PhpManager::new(paths.clone(), events.clone()),
+        services: services::ServiceManager::new(paths.clone(), events.clone()),
+        smtp_port: OnceLock::new(),
+        dump_port: OnceLock::new(),
+        mail: Arc::new(mail::MailStore::open(paths.mail_dir())),
+        dumps: Arc::new(dumps::Dumps::new(&paths.data_dir, state.capture_dumps)),
         events,
         tls: authority,
         paths,
@@ -186,6 +253,7 @@ pub async fn run(paths: Paths, shutdown: impl Future<Output = ()>) -> Result<(),
             .clone()
             .unwrap_or_else(red_helper::default_socket),
         state: RwLock::new(state),
+        project_php: std::sync::Mutex::default(),
     });
     renew_certificates(&app);
     let installs = app.php.discover().await;
@@ -193,6 +261,8 @@ pub async fn run(paths: Paths, shutdown: impl Future<Output = ()>) -> Result<(),
         versions = ?installs.iter().map(|i| &i.full_version).collect::<Vec<_>>(),
         "PHP installations found"
     );
+
+    start_services(&app).await;
 
     let cancel = CancellationToken::new();
     let mut tasks = Vec::new();
@@ -208,6 +278,42 @@ pub async fn run(paths: Paths, shutdown: impl Future<Output = ()>) -> Result<(),
             )));
         }
         Err(err) => tracing::error!(%err, port = dns_port, "DNS responder disabled"),
+    }
+
+    match mail::bind(app.config.smtp_port).await {
+        Ok((listener, port)) => {
+            let _ = app.smtp_port.set(port);
+            tracing::info!(port, "mail catcher listening");
+            tasks.push(tokio::spawn(mail::serve(
+                listener,
+                app.mail.clone(),
+                app.events.clone(),
+                cancel.clone(),
+            )));
+        }
+        Err(err) => tracing::error!(%err, port = app.config.smtp_port, "mail catcher disabled"),
+    }
+
+    match dumps::bind(app.config.dump_port).await {
+        Ok((listener, port)) => {
+            let _ = app.dump_port.set(port);
+            tracing::info!(port, "dump server listening");
+            let renderer_app = app.clone();
+            tasks.push(tokio::spawn(dumps::serve(
+                listener,
+                app.dumps.clone(),
+                move || dumps::Renderer {
+                    php: renderer_app.php_cli_binaries(),
+                    projects: red_core::sites::list(&renderer_app.state_snapshot())
+                        .into_iter()
+                        .map(|s| s.path)
+                        .collect(),
+                },
+                app.events.clone(),
+                cancel.clone(),
+            )));
+        }
+        Err(err) => tracing::error!(%err, port = app.config.dump_port, "dump server disabled"),
     }
 
     // Privileged ports come from the helper when we are not root, or
@@ -265,6 +371,7 @@ pub async fn run(paths: Paths, shutdown: impl Future<Output = ()>) -> Result<(),
         let _ = task.await;
     }
     app.php.shutdown().await;
+    app.services.shutdown().await;
     if let Err(err) = std::fs::remove_file(&socket_path)
         && err.kind() != std::io::ErrorKind::NotFound
     {
@@ -272,6 +379,23 @@ pub async fn run(paths: Paths, shutdown: impl Future<Output = ()>) -> Result<(),
     }
     tracing::info!("redd stopped");
     result
+}
+
+/// Find server binaries and start services marked for autostart.
+async fn start_services(app: &AppState) {
+    let installs = app.services.discover().await;
+    tracing::info!(
+        servers = ?installs
+            .iter()
+            .map(|i| format!("{} {}", i.server.flavor, i.server.full_version))
+            .collect::<Vec<_>>(),
+        "service servers found"
+    );
+    for (name, config) in app.state_snapshot().services {
+        if config.autostart {
+            app.services.start(&name, &config).await;
+        }
+    }
 }
 
 /// Turn listeners received from the helper into tokio listeners.

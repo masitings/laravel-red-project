@@ -25,6 +25,10 @@ pub struct State {
     pub secured: BTreeMap<String, u64>,
     /// Names proxied to a local URL, e.g. `app` → `http://127.0.0.1:5173`.
     pub proxies: BTreeMap<String, String>,
+    /// Database and cache services by instance name, e.g. `mysql`.
+    pub services: BTreeMap<String, crate::ServiceConfig>,
+    /// Send `dump()` output from sites to RED instead of the page.
+    pub capture_dumps: bool,
 }
 
 /// Errors produced while reading or writing the state file.

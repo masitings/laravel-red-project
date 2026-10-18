@@ -4,7 +4,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App, formatUptime } from "./App";
 import { api, RedApiError } from "./api/client";
 import type { DoctorReport } from "./api/gen/DoctorReport";
+import type { DumpsResponse } from "./api/gen/DumpsResponse";
+import type { LogFile } from "./api/gen/LogFile";
+import type { LogResponse } from "./api/gen/LogResponse";
+import type { MailMessage } from "./api/gen/MailMessage";
+import type { MailSummary } from "./api/gen/MailSummary";
 import type { PhpListResponse } from "./api/gen/PhpListResponse";
+import type { ServicesResponse } from "./api/gen/ServicesResponse";
 import type { SiteInfo } from "./api/gen/SiteInfo";
 import type { StatusResponse } from "./api/gen/StatusResponse";
 
@@ -12,7 +18,7 @@ vi.mock("./api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./api/client")>();
   return { ...actual, api: vi.fn() };
 });
-vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(), save: vi.fn() }));
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn() }));
 
 const status: StatusResponse = {
@@ -26,6 +32,8 @@ const status: StatusResponse = {
   https_port: 8443,
   dns_port: 53530,
   helper: false,
+  smtp_port: 2525,
+  dump_port: 9912,
   paths: {
     config_dir: "/Users/me/Library/Application Support/RED",
     data_dir: "/Users/me/Library/Application Support/RED/data",
@@ -90,6 +98,91 @@ const doctor: DoctorReport = {
   ],
 };
 
+const services: ServicesResponse = {
+  services: [
+    {
+      name: "mysql",
+      kind: "mysql",
+      flavor: "mariadb",
+      version: "11.4",
+      binary: "/opt/homebrew/opt/mariadb/bin/mariadbd",
+      port: 3306,
+      autostart: true,
+      status: "failed",
+      pid: null,
+      error: "port 3306 is already in use",
+      data_dir: "/data/services/mysql/data",
+      log_file: "/logs/services/mysql.log",
+      env: [{ name: "DB_PORT", value: "3306" }],
+    },
+  ],
+  available: [
+    {
+      kind: "postgres",
+      flavor: "postgresql",
+      version: "17.2",
+      full_version: "17.2",
+      binary: "/opt/homebrew/opt/postgresql@17/bin/postgres",
+    },
+  ],
+};
+
+const summary: MailSummary = {
+  id: "1760000000000-0001",
+  mailbox: "blog",
+  from: "Blog <app@blog.test>",
+  to: ["user@example.test"],
+  subject: "Welcome aboard",
+  received: 1_760_000_000,
+  size: 512,
+  has_html: true,
+  attachments: 1,
+  read: false,
+};
+
+const message: MailMessage = {
+  summary: { ...summary, read: true },
+  cc: [],
+  envelope_to: ["user@example.test"],
+  text: "Hello there",
+  html: "<p>Hello there</p>",
+  headers: [{ name: "Subject", value: "Welcome aboard" }],
+  attachments: [{ index: 0, filename: "invoice.pdf", content_type: "application/pdf", size: 2048 }],
+};
+
+const dumps: DumpsResponse = {
+  enabled: false,
+  port: 9912,
+  dumps: [
+    {
+      id: 1,
+      received: 1_760_000_000_000,
+      html: "<pre>array:1</pre>",
+      source: { file: "/app/routes/web.php", line: 7, name: "web.php" },
+      origin: "GET /",
+    },
+  ],
+};
+
+const laravelLog: LogFile = {
+  id: "site:blog:storage/logs/laravel.log",
+  kind: "site",
+  label: "blog · laravel.log",
+  path: "/Users/me/Sites/blog/storage/logs/laravel.log",
+  size: 100,
+  modified: 1_760_000_000,
+};
+const logs: LogFile[] = [laravelLog];
+
+const log: LogResponse = {
+  file: laravelLog,
+  entries: [
+    { time: "2026-10-18 10:00:00", level: "error", channel: "local", message: "Boom" },
+    { time: "2026-10-18 10:00:01", level: "info", channel: "local", message: "All good" },
+  ],
+  truncated: false,
+};
+
 function mockDaemon() {
   vi.mocked(api).mockImplementation(async (method: string, path: string) => {
     if (method !== "GET") return null;
@@ -104,6 +197,18 @@ function mockDaemon() {
         return php;
       case "/v1/doctor":
         return doctor;
+      case "/v1/services":
+        return services;
+      case "/v1/mail":
+        return [summary];
+      case `/v1/mail/${summary.id}`:
+        return message;
+      case "/v1/dumps":
+        return dumps;
+      case "/v1/logs":
+        return logs;
+      case `/v1/logs/read?id=${encodeURIComponent(laravelLog.id)}&lines=500`:
+        return log;
       default:
         throw new Error(`unexpected ${path}`);
     }
@@ -176,6 +281,58 @@ describe("App", () => {
     expect(await screen.findByText("redd is running · pid 4242")).toBeInTheDocument();
     expect(screen.getByText("https://*.test:8443")).toBeInTheDocument();
     expect(await screen.findByText("red helper:install")).toBeInTheDocument();
+  });
+
+  it("shows failed services and adds a new one", async () => {
+    mockDaemon();
+    renderApp();
+    fireEvent.click(await screen.findByText("Services"));
+    expect(await screen.findByText(/port 3306 is already in use/)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Server"), { target: { value: "0" } });
+    fireEvent.change(screen.getByLabelText("Port"), { target: { value: "5433" } });
+    fireEvent.click(screen.getByText("Add service"));
+    await waitFor(() =>
+      expect(api).toHaveBeenCalledWith("POST", "/v1/services", {
+        kind: "postgres",
+        version: "17.2",
+        port: 5433,
+      }),
+    );
+    fireEvent.click(screen.getByText("Start"));
+    await waitFor(() => expect(api).toHaveBeenCalledWith("POST", "/v1/services/mysql/start"));
+  });
+
+  it("shows caught mail with an unread count", async () => {
+    mockDaemon();
+    renderApp();
+    expect(await screen.findByText("unread")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Mail"));
+    fireEvent.click(await screen.findByText("Welcome aboard"));
+    expect(await screen.findByText("From Blog <app@blog.test>")).toBeInTheDocument();
+    expect(screen.getByText("invoice.pdf · 2 KB")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "text" }));
+    expect(screen.getByText("Hello there")).toBeInTheDocument();
+  });
+
+  it("turns dump capturing on", async () => {
+    mockDaemon();
+    renderApp();
+    fireEvent.click(await screen.findByText("Dumps"));
+    expect(await screen.findByText("web.php:7")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Capture dumps"));
+    await waitFor(() =>
+      expect(api).toHaveBeenCalledWith("PUT", "/v1/dumps/settings", { enabled: true }),
+    );
+  });
+
+  it("shows and filters log entries", async () => {
+    mockDaemon();
+    renderApp();
+    fireEvent.click(await screen.findByText("Logs"));
+    expect(await screen.findByText("Boom")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Level"), { target: { value: "info" } });
+    expect(screen.queryByText("Boom")).not.toBeInTheDocument();
+    expect(screen.getByText("All good")).toBeInTheDocument();
   });
 
   it("explains how to start redd when it is not running", async () => {

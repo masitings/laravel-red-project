@@ -18,3 +18,11 @@ Projects we plan to build on (not yet included):
 |---------|-------------|---------|
 | [static-php-cli](https://github.com/crazywhalecc/static-php-cli) | Building static PHP binaries (M3) | MIT |
 | [Laravel Valet](https://github.com/laravel/valet) | Reference for framework detection rules | MIT |
+
+Protocols RED speaks, implemented from their public documentation:
+
+| Protocol | Where | Notes |
+|----------|-------|-------|
+| FastCGI | `crates/red-daemon/src/fastcgi.rs` | Talks to PHP-FPM |
+| SMTP (RFC 5321) | `crates/red-daemon/src/mail.rs` | Mail catcher; parsing via the `mail-parser` crate |
+| Symfony VarDumper server mode | `crates/red-daemon/src/dumps.rs` | Rendering runs the project's own `symfony/var-dumper` (MIT); none of its code ships with RED |

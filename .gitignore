@@ -5,3 +5,4 @@ node_modules/
 *.log
 .env
 *.tsbuildinfo
+/apps/gui/src-tauri/binaries

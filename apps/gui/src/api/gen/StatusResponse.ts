@@ -46,6 +46,14 @@ dns_port: number | null,
  */
 helper: boolean, 
 /**
+ * Port of the mail catcher (SMTP) on 127.0.0.1, if it runs.
+ */
+smtp_port: number | null, 
+/**
+ * Port of the dump server on 127.0.0.1, if it runs.
+ */
+dump_port: number | null, 
+/**
  * Where this installation keeps its files.
  */
 paths: StatusPaths, };

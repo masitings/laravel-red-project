@@ -26,12 +26,15 @@ tokio-util.workspace = true
 tokio-stream.workspace = true
 futures-util.workspace = true
 mime_guess.workspace = true
+mail-parser.workspace = true
+base64.workspace = true
 rustls.workspace = true
 tokio-rustls.workspace = true
 rustls-pki-types.workspace = true
 rcgen.workspace = true
 time.workspace = true
 tower.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
@@ -40,12 +43,14 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
+base64.workspace = true
 red-helper.workspace = true
 red-api = { workspace = true, features = ["client"] }
 tokio-rustls.workspace = true
 rustls.workspace = true
 rustls-pki-types.workspace = true
 tempfile.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 
 [lints]

@@ -20,7 +20,13 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(commands::ApiState::discover())
-        .invoke_handler(tauri::generate_handler![commands::api])
+        .invoke_handler(tauri::generate_handler![
+            commands::api,
+            commands::save_mail_file,
+            commands::start_daemon,
+            commands::cli_status,
+            commands::install_cli
+        ])
         .setup(|app| {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(relay_events(handle));

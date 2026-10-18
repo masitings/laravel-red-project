@@ -214,7 +214,7 @@ async fn handle(req: Request<Incoming>, app: Arc<AppState>, conn: Conn) -> Respo
         }
         Action::Static(path) => serve_file(req.method(), &path).await,
         Action::Php(script) => {
-            let version = app.effective_php(&state, &site.name);
+            let version = app.effective_php(&state, &site);
             match version {
                 Some(version) => run_php(req, &app, &site, &script, &version, conn).await,
                 None => page(
@@ -297,7 +297,12 @@ async fn run_php(
             );
         }
     };
-    let params = cgi_params(&parts, script, &body, conn);
+    let mut params = cgi_params(&parts, script, &body, conn);
+    if app.dumps.enabled()
+        && let Some(port) = app.dump_port.get()
+    {
+        params.extend(crate::dumps::fastcgi_params(*port));
+    }
 
     let mut attempt = 0;
     loop {

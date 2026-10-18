@@ -28,6 +28,10 @@ pub struct StatusResponse {
     pub dns_port: Option<u16>,
     /// `true` when ports 80/443 were opened by the privileged helper.
     pub helper: bool,
+    /// Port of the mail catcher (SMTP) on 127.0.0.1, if it runs.
+    pub smtp_port: Option<u16>,
+    /// Port of the dump server on 127.0.0.1, if it runs.
+    pub dump_port: Option<u16>,
     /// Where this installation keeps its files.
     pub paths: StatusPaths,
 }
@@ -81,6 +85,16 @@ pub enum Event {
     ProxiesChanged,
     /// PHP installations, the default version or running pools changed.
     PhpChanged,
+    /// Services were added, removed, started, stopped or failed.
+    ServicesChanged,
+    /// A message reached the mail catcher.
+    MailReceived { id: String },
+    /// Messages were deleted or marked as read.
+    MailChanged,
+    /// A `dump()` reached the dump server.
+    DumpReceived,
+    /// Dumps were cleared or capturing was switched on or off.
+    DumpsChanged,
 }
 
 /// Outcome of one doctor check.
@@ -182,6 +196,288 @@ pub struct PhpListResponse {
     pub default: Option<String>,
     /// Installed versions, newest first.
     pub installs: Vec<PhpInstallInfo>,
+}
+
+// ---- services ------------------------------------------------------------------
+
+/// Kind of server a service runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum ServiceKind {
+    /// MySQL or MariaDB.
+    Mysql,
+    /// PostgreSQL.
+    Postgres,
+    /// Redis or Valkey.
+    Redis,
+}
+
+/// Whether a service is running.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum ServiceStatus {
+    Stopped,
+    /// Started, not accepting connections yet.
+    Starting,
+    Running,
+    /// Could not start or kept crashing; see `error` and the log.
+    Failed,
+}
+
+/// A `NAME=value` pair, e.g. for a project's `.env`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct EnvVar {
+    pub name: String,
+    pub value: String,
+}
+
+/// One service instance, as returned by `GET /v1/services`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ServiceInfo {
+    /// Instance name, e.g. `mysql` or `postgres-15`.
+    pub name: String,
+    pub kind: ServiceKind,
+    /// `mysql`, `mariadb`, `postgresql`, `redis` or `valkey`.
+    pub flavor: Option<String>,
+    /// Server version, e.g. `16.4`.
+    pub version: Option<String>,
+    /// The server binary.
+    pub binary: String,
+    /// TCP port on 127.0.0.1.
+    pub port: u16,
+    /// Started whenever redd starts.
+    pub autostart: bool,
+    pub status: ServiceStatus,
+    pub pid: Option<u32>,
+    /// Why the service failed, when `status` is `failed`.
+    pub error: Option<String>,
+    pub data_dir: String,
+    pub log_file: String,
+    /// Settings for a Laravel `.env`.
+    pub env: Vec<EnvVar>,
+}
+
+/// A server binary RED found and can run as a service.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ServerInstall {
+    pub kind: ServiceKind,
+    pub flavor: String,
+    /// `major.minor`, e.g. `10.11`.
+    pub version: String,
+    pub full_version: String,
+    pub binary: String,
+}
+
+/// Response of `GET /v1/services`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ServicesResponse {
+    pub services: Vec<ServiceInfo>,
+    /// Server binaries found on this machine.
+    pub available: Vec<ServerInstall>,
+}
+
+/// Body of `POST /v1/services`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ServiceRequest {
+    pub kind: ServiceKind,
+    /// Instance name. Defaults to the kind (`mysql`, `postgres`, `redis`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub name: Option<String>,
+    /// Defaults to the kind's usual port (3306, 5432, 6379).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub port: Option<u16>,
+    /// Pick the installed server with this version (prefix match, e.g. `16`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub version: Option<String>,
+    /// Use this server binary instead of a discovered one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub binary: Option<String>,
+    /// Defaults to `true`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub autostart: Option<bool>,
+}
+
+/// Body of `PUT /v1/services/{name}`; absent fields stay unchanged.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ServiceUpdate {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub autostart: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub port: Option<u16>,
+}
+
+// ---- mail ------------------------------------------------------------------------
+
+/// A caught message, as listed by `GET /v1/mail`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct MailSummary {
+    pub id: String,
+    /// The SMTP username the app logged in with (Laravel: `MAIL_USERNAME`),
+    /// used to tell apps apart.
+    pub mailbox: Option<String>,
+    pub from: String,
+    pub to: Vec<String>,
+    pub subject: String,
+    /// Unix time the message arrived.
+    #[ts(type = "number")]
+    pub received: u64,
+    #[ts(type = "number")]
+    pub size: u64,
+    pub has_html: bool,
+    pub attachments: u32,
+    pub read: bool,
+}
+
+/// One header line of a message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct MailHeader {
+    pub name: String,
+    pub value: String,
+}
+
+/// An attachment of a message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct MailAttachment {
+    pub index: u32,
+    pub filename: String,
+    pub content_type: String,
+    #[ts(type = "number")]
+    pub size: u64,
+}
+
+/// Response of `GET /v1/mail/{id}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct MailMessage {
+    pub summary: MailSummary,
+    pub cc: Vec<String>,
+    /// Envelope recipients (`RCPT TO`), which include Bcc addresses.
+    pub envelope_to: Vec<String>,
+    pub text: Option<String>,
+    pub html: Option<String>,
+    pub headers: Vec<MailHeader>,
+    pub attachments: Vec<MailAttachment>,
+}
+
+// ---- dumps -----------------------------------------------------------------------
+
+/// Where a `dump()` call was made.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct DumpSource {
+    pub file: String,
+    pub line: Option<u32>,
+    /// File name as shown to the user (relative to the project when known).
+    pub name: String,
+}
+
+/// One captured dump.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct DumpEntry {
+    #[ts(type = "number")]
+    pub id: u64,
+    /// Unix time in milliseconds.
+    #[ts(type = "number")]
+    pub received: u64,
+    /// The dumped value rendered as HTML by the project's own VarDumper.
+    pub html: String,
+    pub source: Option<DumpSource>,
+    /// Request (`GET /path`) or command line the dump came from.
+    pub origin: Option<String>,
+}
+
+/// Response of `GET /v1/dumps`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct DumpsResponse {
+    /// When `true`, sites send `dump()` output to RED instead of the page.
+    pub enabled: bool,
+    pub port: Option<u16>,
+    /// Newest last.
+    pub dumps: Vec<DumpEntry>,
+}
+
+/// Body of `PUT /v1/dumps/settings`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct DumpSettings {
+    pub enabled: bool,
+}
+
+// ---- logs ------------------------------------------------------------------------
+
+/// What a log file belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum LogKind {
+    /// redd itself.
+    Daemon,
+    /// A database or cache service.
+    Service,
+    /// A PHP-FPM pool.
+    Php,
+    /// A site's own log, e.g. `storage/logs/laravel.log`.
+    Site,
+}
+
+/// A log file RED knows about, as listed by `GET /v1/logs`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct LogFile {
+    /// Pass to `GET /v1/logs/read?id=`.
+    pub id: String,
+    pub kind: LogKind,
+    pub label: String,
+    pub path: String,
+    #[ts(type = "number")]
+    pub size: u64,
+    /// Unix time of the last change.
+    #[ts(type = "number")]
+    pub modified: u64,
+}
+
+/// One entry of a log. Laravel/Monolog lines are split into their parts;
+/// other logs have one entry per line with only `message` set.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct LogEntry {
+    pub time: Option<String>,
+    /// Lower-case level, e.g. `error`.
+    pub level: Option<String>,
+    pub channel: Option<String>,
+    /// The message, including any stack trace that followed it.
+    pub message: String,
+}
+
+/// Response of `GET /v1/logs/read`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct LogResponse {
+    pub file: LogFile,
+    /// Oldest first.
+    pub entries: Vec<LogEntry>,
+    /// `true` when older entries were left out.
+    pub truncated: bool,
 }
 
 /// Directories reported by [`StatusResponse`].

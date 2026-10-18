@@ -142,6 +142,25 @@ impl Client {
         path: &str,
         body: Option<serde_json::Value>,
     ) -> Result<serde_json::Value, ClientError> {
+        let (status, bytes) = self.send(method, path, body).await?;
+        if bytes.is_empty() || status == StatusCode::NO_CONTENT {
+            return Ok(serde_json::Value::Null);
+        }
+        Ok(serde_json::from_slice(&bytes)?)
+    }
+
+    /// `GET` a path that answers with raw bytes (a raw message, an
+    /// attachment).
+    pub async fn bytes(&self, path: &str) -> Result<Bytes, ClientError> {
+        Ok(self.send(Method::GET, path, None).await?.1)
+    }
+
+    async fn send(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<serde_json::Value>,
+    ) -> Result<(StatusCode, Bytes), ClientError> {
         let mut sender = self.connect().await?;
 
         let body = match body {
@@ -161,10 +180,7 @@ impl Client {
         let bytes = response.into_body().collect().await?.to_bytes();
 
         if status.is_success() {
-            if bytes.is_empty() || status == StatusCode::NO_CONTENT {
-                return Ok(serde_json::Value::Null);
-            }
-            return Ok(serde_json::from_slice(&bytes)?);
+            return Ok((status, bytes));
         }
         let error = serde_json::from_slice::<ApiError>(&bytes).unwrap_or_else(|_| {
             ApiError::new(

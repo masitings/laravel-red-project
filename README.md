@@ -3,10 +3,11 @@
 A fast, open-source local PHP development environment for macOS and Linux.
 Park a folder, open `https://my-app.test`. No Docker, no hand-written vhosts.
 
-> **Status: v0.1.0.** Sites, per-site PHP, local HTTPS, `.test` DNS,
-> proxies with WebSockets, a desktop app and `red doctor` all work on macOS.
-> Linux runs too, with some setup steps still manual. Database services,
-> mail and dump viewers come in v0.2. See the [roadmap](#roadmap).
+> **Status: v0.2.0.** Sites, per-site PHP, local HTTPS, `.test` DNS,
+> proxies with WebSockets, database services, a mail catcher, a dump
+> viewer, a log viewer, per-project `red.toml` and a desktop app all work on
+> macOS. Linux runs too, with some setup steps still manual. See the
+> [roadmap](#roadmap).
 
 ## Why
 
@@ -24,10 +25,12 @@ Park a folder, open `https://my-app.test`. No Docker, no hand-written vhosts.
 RED uses the PHP already on your machine, so install PHP first
 (`brew install php`, plus `php@8.3` etc. for more versions).
 
-Download the archive for your platform from the
-[releases page](https://github.com/masitings/red-project/releases), or build
-from source with `just install`. Keep `red`, `redd` and `red-helper` in the
-same directory (for example `~/.local/bin`), then run once:
+Download `RED-<version>-macos-<arch>.dmg` from the
+[releases page](https://github.com/masitings/red-project/releases) and drag
+RED to Applications; the app contains the CLI too ("Install the red command"
+on its Status page links it into `~/.local/bin`). Or download the archive
+for your platform, or build from source with `just install`. Keep `red`,
+`redd` and `red-helper` in the same directory, then run once:
 
 ```sh
 red setup     # installs the helper (80/443), starts redd at login,
@@ -64,8 +67,58 @@ red doctor                      # what is set up, and how to fix what isn't
 red events                      # watch what the daemon is doing
 ```
 
-Every command accepts `--json`. The desktop app (in `apps/gui`) offers the
-same: sites, PHP versions, proxies and the doctor checks.
+### Databases and caches
+
+RED runs MySQL or MariaDB, PostgreSQL, and Redis or Valkey from the
+binaries already on your machine (`brew install mysql postgresql@17 valkey`),
+each with its own data directory, port and log, bound to 127.0.0.1.
+
+```sh
+red services:add mysql          # or mariadb, postgres, redis, valkey
+red services:add postgres --name pg15 --server-version 15 --port 5433
+red services                    # status, plus the servers RED found
+red services:stop mysql         # also :start, :restart, :remove
+red services:env mysql          # DB_* lines for your .env
+```
+
+Services start with redd (unless added with `--no-autostart`) and are
+restarted if they crash. MySQL/MariaDB and PostgreSQL get a `root` user with
+no password, like Laravel's defaults.
+
+### Mail, dumps and logs
+
+```sh
+red mail                        # mail your apps sent (SMTP on 127.0.0.1:2525)
+red mail:show <id>
+red dumps:on                    # dump()/dd() output goes to RED, not the page
+red dumps --follow
+red logs                        # RED, service, PHP-FPM and site logs
+red logs site:blog:storage/logs/laravel.log -f
+```
+
+Point Laravel at the mail catcher with `MAIL_MAILER=smtp`, `MAIL_HOST=127.0.0.1`,
+`MAIL_PORT=2525`; the SMTP username becomes the mailbox, so apps stay apart.
+
+### Per-project settings
+
+Commit a `red.toml` and everyone gets the same setup with `red init`:
+
+```toml
+name = "blog"                   # blog.test
+php = "8.3"                     # redd picks this up as soon as you save
+secure = true
+node = "22"                     # for red node / npm / npx
+services = ["mysql", "redis"]
+```
+
+`red init` creates the file on first run, then links the site, applies
+HTTPS, starts the services and prints the `.env` lines to use. `red php`,
+`red composer`, `red node`, `red npm` and `red npx` run the versions the
+project asks for (Node.js from nvm, fnm, Volta, asdf, mise or Homebrew;
+`.nvmrc` works too), and `eval "$(red env)"` puts them first on your PATH.
+
+Every command accepts `--json`. The desktop app offers the same: sites, PHP
+versions, proxies, services, mail, dumps, logs and the doctor checks.
 
 RED's CA is restricted (X.509 Name Constraints) to `.test` and
 `localhost`, so it cannot issue certificates for real domains.
@@ -78,7 +131,7 @@ static sites.
 
 | Component    | What it does                                                         |
 |--------------|----------------------------------------------------------------------|
-| `redd`       | User-level daemon: Control API (unix socket), web server (HTTP/1.1, HTTP/2, TLS), DNS responder, reverse proxy and PHP-FPM supervisor |
+| `redd`       | User-level daemon: Control API (unix socket), web server (HTTP/1.1, HTTP/2, TLS), DNS responder, reverse proxy, PHP-FPM and service supervisor, SMTP mail catcher, dump server |
 | `red`        | CLI for people and scripts                                           |
 | RED GUI      | Tauri 2 + React desktop app, a thin client of the Control API        |
 | `red-helper` | Tiny root helper that only opens ports 80/443 and writes the resolver file |
@@ -108,6 +161,7 @@ just install        # build release binaries into ~/.local/bin
 just daemon         # run redd in the foreground
 just status         # in another terminal: red status
 just gui            # run the desktop app against the running redd
+just bundle         # build RED.app (or Linux packages) with the binaries inside
 just check          # fmt, clippy, tests, frontend lint/typecheck/tests
 ```
 
@@ -130,7 +184,7 @@ Where RED keeps its files:
 |-------|-------|------|
 | M0 Foundation ✓ | Workspace, CI, Control API, GUI shell | Green build on macOS + Linux |
 | M1 MVP ✓ | Park/link, `.test` DNS, local HTTPS, multiple PHP versions, proxies with WebSocket, GUI for sites and PHP | v0.1.0 |
-| M2 Dev tools | MySQL/PostgreSQL/Valkey, mail catcher, dumps, log viewer, `red.yml`, Node per site | v0.2.0 |
+| M2 Dev tools ✓ | MySQL/PostgreSQL/Valkey, mail catcher, dumps, log viewer, `red.toml`, Node per site, desktop app bundle | v0.2.0 |
 | M3 Distribution | Linux, our own static PHP builds, signed and notarized releases | Signed releases on both OSes |
 | M4 Advanced | On-demand Xdebug, sharing/tunnels, profiler, MCP server, git workspaces | v1.0.0 |
 

@@ -28,6 +28,14 @@ pub const FALLBACK_HTTPS_PORT: u16 = 8443;
 /// the resolver file tells the OS to send `.<tld>` queries here.
 pub const DEFAULT_DNS_PORT: u16 = 53530;
 
+/// Loopback port of the mail catcher (SMTP). Laravel apps point
+/// `MAIL_PORT` here.
+pub const DEFAULT_SMTP_PORT: u16 = 2525;
+
+/// Loopback port of the dump server. Symfony's VarDumper sends dumps to
+/// 127.0.0.1:9912 by default.
+pub const DEFAULT_DUMP_PORT: u16 = 9912;
+
 /// Contents of `config.toml`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -43,6 +51,10 @@ pub struct Config {
     /// Socket of the privileged helper, if not the default. When set, redd
     /// always asks the helper for its web ports.
     pub helper_socket: Option<PathBuf>,
+    /// Port of the mail catcher on 127.0.0.1. `0` picks a free port.
+    pub smtp_port: u16,
+    /// Port of the dump server on 127.0.0.1. `0` picks a free port.
+    pub dump_port: u16,
 }
 
 impl Default for Config {
@@ -53,6 +65,8 @@ impl Default for Config {
             https_port: DEFAULT_HTTPS_PORT,
             dns_port: DEFAULT_DNS_PORT,
             helper_socket: None,
+            smtp_port: DEFAULT_SMTP_PORT,
+            dump_port: DEFAULT_DUMP_PORT,
         }
     }
 }

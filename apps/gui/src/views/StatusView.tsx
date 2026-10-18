@@ -1,7 +1,9 @@
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import type { CheckStatus } from "../api/gen/CheckStatus";
 import type { StatusResponse } from "../api/gen/StatusResponse";
 import { useDoctor } from "../api/queries";
-import { Badge, Button, Card } from "../components/ui";
+import { Badge, Button, Card, ErrorNote } from "../components/ui";
 
 const tone: Record<CheckStatus, "good" | "warn" | "bad"> = {
   ok: "good",
@@ -16,6 +18,8 @@ export function StatusView({ status }: { status: StatusResponse }) {
     ["Uptime", formatUptime(status.uptime_secs)],
     ["HTTP", address("http", status.http_port, 80, status.tld)],
     ["HTTPS", address("https", status.https_port, 443, status.tld)],
+    ["Mail", status.smtp_port === null ? "not running" : `smtp://127.0.0.1:${status.smtp_port}`],
+    ["Dumps", status.dump_port === null ? "not running" : `127.0.0.1:${status.dump_port}`],
     ["Config", status.paths.config_dir],
     ["Data", status.paths.data_dir],
   ];
@@ -31,6 +35,7 @@ export function StatusView({ status }: { status: StatusResponse }) {
           ))}
         </dl>
       </Card>
+      {isTauri() && <CliCard />}
       <Card
         title="Doctor"
         actions={
@@ -57,6 +62,51 @@ export function StatusView({ status }: { status: StatusResponse }) {
         </ul>
       </Card>
     </div>
+  );
+}
+
+type CliStatus = { bundled: string | null; installed: string | null };
+
+function CliCard() {
+  const cli = useQuery({
+    queryKey: ["cli"],
+    queryFn: () => invoke<CliStatus>("cli_status"),
+  });
+  const install = useMutation({
+    mutationFn: () => invoke<string>("install_cli"),
+    onSuccess: () => cli.refetch(),
+  });
+  if (!cli.data) return null;
+  const { bundled, installed } = cli.data;
+  return (
+    <Card title="Command-line tool">
+      <div className="space-y-2 text-sm">
+        {installed ? (
+          <p>
+            <code>red</code> is installed at <code>{installed}</code>.
+          </p>
+        ) : (
+          <p className="text-stone-600 dark:text-stone-400">
+            <code>red</code> is not on your PATH yet.
+          </p>
+        )}
+        {bundled && !installed && (
+          <Button variant="primary" onClick={() => install.mutate()} disabled={install.isPending}>
+            Install the red command
+          </Button>
+        )}
+        {install.data && (
+          <p className="text-xs text-stone-500">
+            Linked {install.data}. Make sure <code>~/.local/bin</code> is on your PATH.
+          </p>
+        )}
+        <ErrorNote error={install.error} />
+        <p className="text-xs text-stone-500">
+          Run <code>red setup</code> in a terminal once for ports 80/443, <code>.test</code> DNS and
+          trusted HTTPS.
+        </p>
+      </div>
+    </Card>
   );
 }
 

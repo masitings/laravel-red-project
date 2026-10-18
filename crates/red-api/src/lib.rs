@@ -38,6 +38,23 @@ pub mod endpoints {
     pub const EVENTS: &str = "/v1/events";
     /// `GET`: proxies. `POST`: add one. `DELETE /v1/proxies/{name}`: remove.
     pub const PROXIES: &str = "/v1/proxies";
+    /// `GET`: services and installable servers. `POST`: add a service.
+    /// `PUT`/`DELETE /v1/services/{name}`: change / remove one
+    /// (`?delete_data=true` also deletes its data).
+    /// `POST /v1/services/{name}/{start,stop,restart}`.
+    pub const SERVICES: &str = "/v1/services";
+    /// `GET`: caught mail (`?mailbox=` filters). `DELETE`: delete all.
+    /// `GET`/`DELETE /v1/mail/{id}`, `GET /v1/mail/{id}/raw`,
+    /// `GET /v1/mail/{id}/attachments/{index}`.
+    pub const MAIL: &str = "/v1/mail";
+    /// `GET`: captured dumps. `DELETE`: clear them.
+    pub const DUMPS: &str = "/v1/dumps";
+    /// `PUT`: switch dump capturing on or off.
+    pub const DUMP_SETTINGS: &str = "/v1/dumps/settings";
+    /// `GET`: known log files.
+    pub const LOGS: &str = "/v1/logs";
+    /// `GET ?id=<log id>&lines=<n>`: the end of one log.
+    pub const LOG_READ: &str = "/v1/logs/read";
 
     /// `/v1/sites/{name}`
     pub fn site(name: &str) -> String {
@@ -62,6 +79,22 @@ pub mod endpoints {
     /// `/v1/proxies/{name}/secure`: `PUT` secures, `DELETE` unsecures.
     pub fn proxy_secure(name: &str) -> String {
         format!("{PROXIES}/{name}/secure")
+    }
+
+    /// `/v1/services/{name}`
+    pub fn service(name: &str) -> String {
+        format!("{SERVICES}/{name}")
+    }
+
+    /// `/v1/services/{name}/{action}` with `action` one of `start`, `stop`,
+    /// `restart`.
+    pub fn service_action(name: &str, action: &str) -> String {
+        format!("{SERVICES}/{name}/{action}")
+    }
+
+    /// `/v1/mail/{id}`
+    pub fn mail(id: &str) -> String {
+        format!("{MAIL}/{id}")
     }
 
     /// `/v1/links/{name}`

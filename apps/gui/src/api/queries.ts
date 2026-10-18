@@ -1,8 +1,15 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./client";
 import type { DoctorReport } from "./gen/DoctorReport";
+import type { DumpsResponse } from "./gen/DumpsResponse";
+import type { LogFile } from "./gen/LogFile";
+import type { LogResponse } from "./gen/LogResponse";
+import type { MailMessage } from "./gen/MailMessage";
+import type { MailSummary } from "./gen/MailSummary";
 import type { PhpListResponse } from "./gen/PhpListResponse";
 import type { ProxyInfo } from "./gen/ProxyInfo";
+import type { ServiceKind } from "./gen/ServiceKind";
+import type { ServicesResponse } from "./gen/ServicesResponse";
 import type { SiteInfo } from "./gen/SiteInfo";
 import type { StatusResponse } from "./gen/StatusResponse";
 
@@ -12,6 +19,10 @@ export const keys = {
   proxies: ["proxies"] as const,
   php: ["php"] as const,
   doctor: ["doctor"] as const,
+  services: ["services"] as const,
+  mail: ["mail"] as const,
+  dumps: ["dumps"] as const,
+  logs: ["logs"] as const,
 };
 
 const enc = encodeURIComponent;
@@ -104,4 +115,88 @@ export function useSetDefaultPhp() {
     (version: string) => api("PUT", "/v1/php/default", { version }),
     [keys.php, keys.sites],
   );
+}
+
+export function useServices() {
+  return useQuery({
+    queryKey: keys.services,
+    queryFn: () => api<ServicesResponse>("GET", "/v1/services"),
+    // Services move through "starting" on their own; poll while any does.
+    refetchInterval: (query) =>
+      query.state.data?.services.some((s) => s.status === "starting") ? 1000 : false,
+  });
+}
+
+export function useServiceActions() {
+  const refresh = [keys.services, keys.doctor];
+  return {
+    add: useAction(
+      ({ kind, version, port }: { kind: ServiceKind; version?: string; port?: number }) =>
+        api("POST", "/v1/services", { kind, version, port }),
+      refresh,
+    ),
+    action: useAction(
+      ({ name, action }: { name: string; action: "start" | "stop" | "restart" }) =>
+        api("POST", `/v1/services/${enc(name)}/${action}`),
+      refresh,
+    ),
+    autostart: useAction(
+      ({ name, on }: { name: string; on: boolean }) =>
+        api("PUT", `/v1/services/${enc(name)}`, { autostart: on }),
+      refresh,
+    ),
+    remove: useAction(
+      ({ name, deleteData }: { name: string; deleteData: boolean }) =>
+        api("DELETE", `/v1/services/${enc(name)}${deleteData ? "?delete_data=true" : ""}`),
+      refresh,
+    ),
+  };
+}
+
+export function useMail() {
+  return useQuery({ queryKey: keys.mail, queryFn: () => api<MailSummary[]>("GET", "/v1/mail") });
+}
+
+export function useMailMessage(id: string | null) {
+  return useQuery({
+    queryKey: [...keys.mail, id],
+    queryFn: () => api<MailMessage>("GET", `/v1/mail/${enc(id ?? "")}`),
+    enabled: id !== null,
+  });
+}
+
+export function useMailActions() {
+  const refresh = [keys.mail];
+  return {
+    remove: useAction((id: string) => api("DELETE", `/v1/mail/${enc(id)}`), refresh),
+    clear: useAction(() => api("DELETE", "/v1/mail"), refresh),
+  };
+}
+
+export function useDumps() {
+  return useQuery({ queryKey: keys.dumps, queryFn: () => api<DumpsResponse>("GET", "/v1/dumps") });
+}
+
+export function useDumpActions() {
+  const refresh = [keys.dumps];
+  return {
+    setEnabled: useAction(
+      (enabled: boolean) => api("PUT", "/v1/dumps/settings", { enabled }),
+      refresh,
+    ),
+    clear: useAction(() => api("DELETE", "/v1/dumps"), refresh),
+  };
+}
+
+export function useLogs() {
+  return useQuery({ queryKey: keys.logs, queryFn: () => api<LogFile[]>("GET", "/v1/logs") });
+}
+
+export function useLog(id: string | null, follow: boolean) {
+  return useQuery({
+    queryKey: [...keys.logs, id],
+    queryFn: () => api<LogResponse>("GET", `/v1/logs/read?id=${enc(id ?? "")}&lines=500`),
+    enabled: id !== null,
+    refetchInterval: follow ? 2000 : false,
+  });
 }

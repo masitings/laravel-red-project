@@ -26,6 +26,18 @@ export function useDaemonEvents() {
           client.invalidateQueries({ queryKey: keys.php });
           client.invalidateQueries({ queryKey: keys.sites });
           break;
+        case "services_changed":
+          client.invalidateQueries({ queryKey: keys.services });
+          client.invalidateQueries({ queryKey: keys.doctor });
+          break;
+        case "mail_received":
+        case "mail_changed":
+          client.invalidateQueries({ queryKey: keys.mail, exact: true });
+          break;
+        case "dump_received":
+        case "dumps_changed":
+          client.invalidateQueries({ queryKey: keys.dumps });
+          break;
       }
     };
     const unlisten = listen<Event>("red://event", (message) => refresh(message.payload));

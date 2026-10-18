@@ -11,8 +11,12 @@ use red_api::{
 use red_platform::Paths;
 use serde::Serialize;
 
+mod inspect;
 mod install;
+mod project;
+mod services;
 mod system;
+mod tools;
 
 /// red: local PHP development environment.
 #[derive(Debug, Parser)]
@@ -110,6 +114,125 @@ enum Command {
     /// Remove the resolver file installed by `red dns:install` (uses sudo).
     #[command(name = "dns:uninstall")]
     DnsUninstall,
+    /// List database and cache services, and the servers RED found.
+    Services,
+    /// Add and start a service: mysql (or mariadb), postgres, redis (or valkey).
+    #[command(name = "services:add")]
+    ServicesAdd {
+        #[arg(value_name = "KIND")]
+        kind: String,
+        /// Instance name (default: the kind), e.g. postgres-15.
+        #[arg(long)]
+        name: Option<String>,
+        /// Port on 127.0.0.1 (default: 3306, 5432 or 6379).
+        #[arg(long)]
+        port: Option<u16>,
+        /// Use the installed server with this version, e.g. 16 or 8.4.
+        #[arg(long = "server-version", value_name = "VERSION")]
+        server_version: Option<String>,
+        /// Use this server binary.
+        #[arg(long)]
+        binary: Option<String>,
+        /// Do not start it whenever redd starts.
+        #[arg(long)]
+        no_autostart: bool,
+    },
+    /// Start a service.
+    #[command(name = "services:start")]
+    ServicesStart { name: String },
+    /// Stop a service.
+    #[command(name = "services:stop")]
+    ServicesStop { name: String },
+    /// Restart a service.
+    #[command(name = "services:restart")]
+    ServicesRestart { name: String },
+    /// Remove a service (its data is kept unless --delete-data is given).
+    #[command(name = "services:remove")]
+    ServicesRemove {
+        name: String,
+        #[arg(long)]
+        delete_data: bool,
+    },
+    /// Print the .env settings for a service.
+    #[command(name = "services:env")]
+    ServicesEnv { name: String },
+    /// Set up the project in the current directory from its red.toml
+    /// (created on first run): link, HTTPS, PHP, services.
+    Init,
+    /// Run the project's PHP version.
+    #[command(disable_help_flag = true, disable_version_flag = true)]
+    Php {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<std::ffi::OsString>,
+    },
+    /// Run Composer with the project's PHP version.
+    #[command(disable_help_flag = true, disable_version_flag = true)]
+    Composer {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<std::ffi::OsString>,
+    },
+    /// Run the project's Node.js version (red.toml, .nvmrc or .node-version).
+    #[command(disable_help_flag = true, disable_version_flag = true)]
+    Node {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<std::ffi::OsString>,
+    },
+    /// Run npm from the project's Node.js version.
+    #[command(disable_help_flag = true, disable_version_flag = true)]
+    Npm {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<std::ffi::OsString>,
+    },
+    /// Run npx from the project's Node.js version.
+    #[command(disable_help_flag = true, disable_version_flag = true)]
+    Npx {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<std::ffi::OsString>,
+    },
+    /// Print shell commands that put the project's PHP and Node.js first on
+    /// PATH: eval "$(red env)".
+    Env,
+    /// List caught mail.
+    Mail {
+        /// Only mail sent with this SMTP username.
+        #[arg(long)]
+        mailbox: Option<String>,
+    },
+    /// Show one caught message.
+    #[command(name = "mail:show")]
+    MailShow { id: String },
+    /// Delete caught mail.
+    #[command(name = "mail:clear")]
+    MailClear {
+        #[arg(long)]
+        mailbox: Option<String>,
+    },
+    /// Show captured dump() output.
+    Dumps {
+        /// Keep printing new dumps as they arrive.
+        #[arg(short, long)]
+        follow: bool,
+    },
+    /// Send dump() output from sites to RED instead of the page.
+    #[command(name = "dumps:on")]
+    DumpsOn,
+    /// Show dump() output in the page again.
+    #[command(name = "dumps:off")]
+    DumpsOff,
+    /// Clear captured dumps.
+    #[command(name = "dumps:clear")]
+    DumpsClear,
+    /// List logs, or show one: RED, services, PHP-FPM and site logs.
+    Logs {
+        /// Log id from `red logs`.
+        id: Option<String>,
+        /// Number of entries to show.
+        #[arg(short = 'n', long, default_value_t = 50)]
+        lines: usize,
+        /// Keep printing new entries.
+        #[arg(short, long)]
+        follow: bool,
+    },
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -494,6 +617,52 @@ async fn run(cli: &Cli) -> anyhow::Result<()> {
             let report: DoctorReport = ctx.client.get(endpoints::DOCTOR).await?;
             print_doctor(&report);
         }
+        Command::Services => services::list(&ctx).await?,
+        Command::ServicesAdd {
+            kind,
+            name,
+            port,
+            server_version,
+            binary,
+            no_autostart,
+        } => {
+            services::add(
+                &ctx,
+                services::AddArgs {
+                    kind,
+                    name: name.clone(),
+                    port: *port,
+                    version: server_version.clone(),
+                    binary: binary.clone(),
+                    autostart: !no_autostart,
+                },
+            )
+            .await?
+        }
+        Command::ServicesStart { name } => services::action(&ctx, name, "start").await?,
+        Command::ServicesStop { name } => services::action(&ctx, name, "stop").await?,
+        Command::ServicesRestart { name } => services::action(&ctx, name, "restart").await?,
+        Command::ServicesRemove { name, delete_data } => {
+            services::remove(&ctx, name, *delete_data).await?
+        }
+        Command::ServicesEnv { name } => services::env(&ctx, name).await?,
+        Command::Init => project::init(&ctx).await?,
+        Command::Php { args } => tools::php(&ctx, args).await?,
+        Command::Composer { args } => tools::composer(&ctx, args).await?,
+        Command::Node { args } => tools::node("node", args)?,
+        Command::Npm { args } => tools::node("npm", args)?,
+        Command::Npx { args } => tools::node("npx", args)?,
+        Command::Env => tools::env(&ctx).await?,
+        Command::Mail { mailbox } => inspect::mail_list(&ctx, mailbox.as_deref()).await?,
+        Command::MailShow { id } => inspect::mail_show(&ctx, id).await?,
+        Command::MailClear { mailbox } => inspect::mail_clear(&ctx, mailbox.as_deref()).await?,
+        Command::Dumps { follow } => inspect::dumps(&ctx, *follow).await?,
+        Command::DumpsOn => inspect::dumps_set(&ctx, true).await?,
+        Command::DumpsOff => inspect::dumps_set(&ctx, false).await?,
+        Command::DumpsClear => inspect::dumps_clear(&ctx).await?,
+        Command::Logs { id, lines, follow } => {
+            inspect::logs(&ctx, id.as_deref(), *lines, *follow).await?
+        }
         Command::Unisolate { site } => {
             let name = ctx.site_name(site).await?;
             let site: SiteInfo = ctx
@@ -570,6 +739,14 @@ fn print_status(status: &StatusResponse) {
     match status.dns_port {
         Some(port) => println!("dns      .{} on 127.0.0.1:{port}", status.tld),
         None => println!("dns      not running (see the redd log)"),
+    }
+    match status.smtp_port {
+        Some(port) => println!("mail     smtp://127.0.0.1:{port}"),
+        None => println!("mail     not running (see the redd log)"),
+    }
+    match status.dump_port {
+        Some(port) => println!("dumps    127.0.0.1:{port}"),
+        None => println!("dumps    not running (see the redd log)"),
     }
     println!("config   {}", status.paths.config_dir);
     println!("data     {}", status.paths.data_dir);
@@ -724,6 +901,18 @@ mod tests {
         assert!(Cli::try_parse_from(["red", "use", "8.4"]).is_ok());
         assert!(Cli::try_parse_from(["red", "--version"]).is_err()); // prints version
         assert!(Cli::try_parse_from(["red", "links"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["red", "services:add", "postgres", "--server-version", "16"])
+                .is_ok()
+        );
+        assert!(Cli::try_parse_from(["red", "services:remove", "mysql", "--delete-data"]).is_ok());
+        let cli = Cli::try_parse_from(["red", "php", "-v"]).unwrap();
+        assert!(matches!(&cli.command, Command::Php { args } if args == &["-v"]));
+        let cli = Cli::try_parse_from(["red", "npm", "run", "dev", "--", "--host"]).unwrap();
+        assert!(matches!(&cli.command, Command::Npm { args } if args.len() == 4));
+        assert!(Cli::try_parse_from(["red", "logs", "daemon", "-n", "10", "-f"]).is_ok());
+        let cli = Cli::try_parse_from(["red", "composer", "--version"]).unwrap();
+        assert!(matches!(&cli.command, Command::Composer { args } if args == &["--version"]));
     }
 
     #[test]

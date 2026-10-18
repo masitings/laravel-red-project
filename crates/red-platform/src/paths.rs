@@ -124,6 +124,26 @@ impl Paths {
     pub fn php_socket(&self, version: &str) -> PathBuf {
         self.run_dir.join(format!("php{version}.sock"))
     }
+
+    /// Directory of the service instance `name` (its data lives in `data/`).
+    pub fn service_dir(&self, name: &str) -> PathBuf {
+        self.data_dir.join("services").join(name)
+    }
+
+    /// Log file of the service instance `name`.
+    pub fn service_log(&self, name: &str) -> PathBuf {
+        self.log_dir.join("services").join(format!("{name}.log"))
+    }
+
+    /// Where caught mail is stored.
+    pub fn mail_dir(&self) -> PathBuf {
+        self.data_dir.join("mail")
+    }
+
+    /// Log file of the daemon itself when started by the login agent.
+    pub fn daemon_log(&self) -> PathBuf {
+        self.log_dir.join("redd.log")
+    }
 }
 
 #[cfg(test)]
