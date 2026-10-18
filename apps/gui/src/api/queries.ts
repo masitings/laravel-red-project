@@ -8,6 +8,8 @@ import type { MailMessage } from "./gen/MailMessage";
 import type { MailSummary } from "./gen/MailSummary";
 import type { PhpListResponse } from "./gen/PhpListResponse";
 import type { ProxyInfo } from "./gen/ProxyInfo";
+import type { RuntimeKind } from "./gen/RuntimeKind";
+import type { RuntimesResponse } from "./gen/RuntimesResponse";
 import type { ServiceKind } from "./gen/ServiceKind";
 import type { ServicesResponse } from "./gen/ServicesResponse";
 import type { SiteInfo } from "./gen/SiteInfo";
@@ -23,6 +25,7 @@ export const keys = {
   mail: ["mail"] as const,
   dumps: ["dumps"] as const,
   logs: ["logs"] as const,
+  runtimes: ["runtimes"] as const,
 };
 
 const enc = encodeURIComponent;
@@ -199,4 +202,32 @@ export function useLog(id: string | null, follow: boolean) {
     enabled: id !== null,
     refetchInterval: follow ? 2000 : false,
   });
+}
+
+export function useRuntimes() {
+  return useQuery({
+    queryKey: keys.runtimes,
+    queryFn: () => api<RuntimesResponse>("GET", "/v1/runtimes"),
+    // Events report progress; polling is a fallback while a download runs.
+    refetchInterval: (query) =>
+      query.state.data?.jobs.some((j) => j.state === "downloading" || j.state === "extracting")
+        ? 1000
+        : false,
+  });
+}
+
+export function useRuntimeActions() {
+  const refresh = [keys.runtimes, keys.php, keys.services, keys.doctor];
+  return {
+    install: useAction(
+      ({ kind, version }: { kind: RuntimeKind; version: string }) =>
+        api("POST", "/v1/runtimes", { kind, version }),
+      refresh,
+    ),
+    remove: useAction(
+      ({ kind, line }: { kind: RuntimeKind; line: string }) =>
+        api("DELETE", `/v1/runtimes/${kind}/${enc(line)}`),
+      refresh,
+    ),
+  };
 }

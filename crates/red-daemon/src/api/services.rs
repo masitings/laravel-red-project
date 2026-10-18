@@ -195,9 +195,11 @@ fn missing_server(
     let hint = if available.is_empty() {
         match kind {
             ServiceKind::Mysql => {
-                "install one, e.g. `brew install mysql` or `brew install mariadb`"
+                "let RED download it with `red runtimes:install mysql`, or `brew install mysql`"
             }
-            ServiceKind::Postgres => "install one, e.g. `brew install postgresql@17`",
+            ServiceKind::Postgres => {
+                "let RED download it with `red runtimes:install postgres`, or `brew install postgresql@17`"
+            }
             ServiceKind::Redis => "install one, e.g. `brew install valkey` or `brew install redis`",
         }
         .to_owned()

@@ -95,6 +95,9 @@ pub enum Event {
     DumpReceived,
     /// Dumps were cleared or capturing was switched on or off.
     DumpsChanged,
+    /// A runtime download progressed, finished or failed, or a runtime was
+    /// removed.
+    RuntimesChanged,
 }
 
 /// Outcome of one doctor check.
@@ -478,6 +481,97 @@ pub struct LogResponse {
     pub entries: Vec<LogEntry>,
     /// `true` when older entries were left out.
     pub truncated: bool,
+}
+
+// ---- runtimes --------------------------------------------------------------------
+
+/// Something RED can download and manage itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum RuntimeKind {
+    Php,
+    Mysql,
+    Postgres,
+}
+
+/// A runtime installed by RED.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RuntimeInfo {
+    pub kind: RuntimeKind,
+    /// The line, e.g. `8.4` or `18`; also the directory name.
+    pub line: String,
+    /// Exact version, e.g. `8.4.23`.
+    pub version: String,
+    pub path: String,
+    /// Unix time of the installation.
+    #[ts(type = "number")]
+    pub installed: u64,
+}
+
+/// A version RED can download.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RuntimeRelease {
+    pub kind: RuntimeKind,
+    pub line: String,
+    pub version: String,
+}
+
+/// Progress of a download.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum JobState {
+    Downloading,
+    Extracting,
+    Done,
+    Failed,
+}
+
+/// One install started with `POST /v1/runtimes`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RuntimeJob {
+    #[ts(type = "number")]
+    pub id: u64,
+    pub kind: RuntimeKind,
+    pub line: String,
+    pub version: String,
+    pub state: JobState,
+    /// Bytes downloaded so far, over all files.
+    #[ts(type = "number")]
+    pub received: u64,
+    /// Total bytes to download, when the server said.
+    #[ts(type = "number | null")]
+    pub total: Option<u64>,
+    pub error: Option<String>,
+}
+
+/// Response of `GET /v1/runtimes`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RuntimesResponse {
+    /// `macos-aarch64`, `linux-x86_64`, ...
+    pub platform: String,
+    pub installed: Vec<RuntimeInfo>,
+    /// Newest version of every line RED can download for this platform.
+    pub available: Vec<RuntimeRelease>,
+    /// Recent and running installs, newest first.
+    pub jobs: Vec<RuntimeJob>,
+    /// Why some catalogs could not be fetched (offline, ...).
+    pub catalog_errors: Vec<String>,
+}
+
+/// Body of `POST /v1/runtimes`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RuntimeRequest {
+    pub kind: RuntimeKind,
+    /// A line (`8.4`), an exact version, or empty for the newest.
+    #[serde(default)]
+    pub version: String,
 }
 
 /// Directories reported by [`StatusResponse`].

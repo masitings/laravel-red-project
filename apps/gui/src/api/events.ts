@@ -34,6 +34,11 @@ export function useDaemonEvents() {
         case "mail_changed":
           client.invalidateQueries({ queryKey: keys.mail, exact: true });
           break;
+        case "runtimes_changed":
+          client.invalidateQueries({ queryKey: keys.runtimes });
+          client.invalidateQueries({ queryKey: keys.php });
+          client.invalidateQueries({ queryKey: keys.services });
+          break;
         case "dump_received":
         case "dumps_changed":
           client.invalidateQueries({ queryKey: keys.dumps });

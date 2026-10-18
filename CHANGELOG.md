@@ -4,6 +4,31 @@ All notable changes to RED Project. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Runtimes
+- RED downloads and manages PHP, MySQL and PostgreSQL itself, no Homebrew
+  needed: `red php:install [8.4]`, `red runtimes`,
+  `red runtimes:install mysql|postgres [version]`, `red runtimes:remove`.
+  - PHP: self-contained builds from static-php-cli (8.1 to 8.5, common
+    extensions included), each with its own editable `php.ini`.
+  - PostgreSQL 14 to 18: relocatable builds from the zonky project on Maven
+    Central, verified against the published SHA-256.
+  - MySQL 8.4 LTS: Oracle's official tarballs, verified against checksums
+    pinned in RED.
+- Downloads run in the background with progress (CLI, app and events),
+  unpack into a staging directory and are checked to run before they
+  replace anything; updating a line keeps its `php.ini`.
+- RED's runtimes are found before Homebrew's; services can use them right
+  away, and a runtime that a service uses cannot be removed by accident.
+- `red setup` installs PHP when none is found.
+- The app's PHP page and Services page can install, update and remove
+  runtimes.
+
+### Fixed
+- MySQL services accept `root` from 127.0.0.1 (MySQL's root account is
+  `root@localhost`).
+
 ## [0.2.0] - 2026-10-18
 
 Developer tools: databases, mail, dumps, logs and per-project settings.

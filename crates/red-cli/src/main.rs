@@ -14,6 +14,7 @@ use serde::Serialize;
 mod inspect;
 mod install;
 mod project;
+mod runtimes;
 mod services;
 mod system;
 mod tools;
@@ -57,6 +58,36 @@ enum Command {
     /// List installed PHP versions.
     #[command(name = "php:list")]
     PhpList,
+    /// Download and install a PHP version managed by RED (default: newest).
+    #[command(name = "php:install")]
+    PhpInstall {
+        #[arg(value_name = "VERSION")]
+        php: Option<String>,
+    },
+    /// Remove a PHP version installed with `red php:install`.
+    #[command(name = "php:uninstall")]
+    PhpUninstall {
+        #[arg(value_name = "VERSION")]
+        php: String,
+    },
+    /// List runtimes RED installed and the versions it can download.
+    Runtimes,
+    /// Download and install php, mysql or postgres (default: newest version).
+    #[command(name = "runtimes:install")]
+    RuntimesInstall {
+        #[arg(value_name = "RUNTIME")]
+        kind: String,
+        #[arg(value_name = "VERSION")]
+        line: Option<String>,
+    },
+    /// Remove a runtime installed by RED.
+    #[command(name = "runtimes:remove")]
+    RuntimesRemove {
+        #[arg(value_name = "RUNTIME")]
+        kind: String,
+        #[arg(value_name = "VERSION")]
+        line: String,
+    },
     /// Set the PHP version used by sites that are not isolated.
     Use {
         #[arg(value_name = "VERSION")]
@@ -616,6 +647,11 @@ async fn run(cli: &Cli) -> anyhow::Result<()> {
             println!("\n2/4  Start redd at login");
             install::install_agent(&paths.log_dir)?;
             ctx.wait_for_daemon().await?;
+            let php: PhpListResponse = ctx.client.get(endpoints::PHP).await?;
+            if php.installs.is_empty() {
+                println!("\n     No PHP found; installing RED's own build");
+                runtimes::install(&ctx, red_api::RuntimeKind::Php, "").await?;
+            }
             println!("\n3/4  DNS for .test");
             ctx.dns(true).await?;
             println!("\n4/4  Trust the local certificate authority");
@@ -624,6 +660,30 @@ async fn run(cli: &Cli) -> anyhow::Result<()> {
             println!();
             let report: DoctorReport = ctx.client.get(endpoints::DOCTOR).await?;
             print_doctor(&report);
+        }
+        Command::PhpInstall { php } => {
+            runtimes::install(
+                &ctx,
+                red_api::RuntimeKind::Php,
+                php.as_deref().unwrap_or(""),
+            )
+            .await?
+        }
+        Command::PhpUninstall { php } => {
+            let line = red_core::php::minor_version(php).unwrap_or_else(|| php.clone());
+            runtimes::remove(&ctx, red_api::RuntimeKind::Php, &line).await?
+        }
+        Command::Runtimes => runtimes::list(&ctx).await?,
+        Command::RuntimesInstall { kind, line } => {
+            runtimes::install(
+                &ctx,
+                runtimes::parse_kind(kind)?,
+                line.as_deref().unwrap_or(""),
+            )
+            .await?
+        }
+        Command::RuntimesRemove { kind, line } => {
+            runtimes::remove(&ctx, runtimes::parse_kind(kind)?, line).await?
         }
         Command::Services => services::list(&ctx).await?,
         Command::ServicesAdd {
@@ -909,6 +969,9 @@ mod tests {
         let cli = Cli::try_parse_from(["red", "isolate", "8.3", "--site", "blog"]).unwrap();
         assert!(matches!(cli.command, Command::Isolate { .. }));
         assert!(Cli::try_parse_from(["red", "php:list"]).is_ok());
+        assert!(Cli::try_parse_from(["red", "php:install"]).is_ok());
+        assert!(Cli::try_parse_from(["red", "php:install", "8.3"]).is_ok());
+        assert!(Cli::try_parse_from(["red", "runtimes:install", "postgres", "17"]).is_ok());
         assert!(Cli::try_parse_from(["red", "use", "8.4"]).is_ok());
         assert!(Cli::try_parse_from(["red", "--version"]).is_err()); // prints version
         assert!(Cli::try_parse_from(["red", "links"]).is_ok());

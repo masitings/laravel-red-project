@@ -9,6 +9,7 @@ pub mod driver;
 pub mod logs;
 pub mod php;
 pub mod project;
+pub mod runtimes;
 pub mod services;
 pub mod sites;
 pub mod state;

@@ -184,6 +184,9 @@ impl PhpManager {
 
         let mut command = Command::new(&install.fpm);
         command.arg("--nodaemonize").arg("--fpm-config").arg(&conf);
+        if let Some(ini) = red_platform::binaries::php_ini_for(&install.fpm) {
+            command.arg("-c").arg(ini);
+        }
         if red_platform::user::is_root() {
             command.arg("--allow-to-run-as-root");
         }

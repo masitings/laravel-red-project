@@ -2,6 +2,7 @@ import { type FormEvent, useState } from "react";
 import type { ServiceInfo } from "../api/gen/ServiceInfo";
 import type { ServiceStatus } from "../api/gen/ServiceStatus";
 import { useServiceActions, useServices } from "../api/queries";
+import { RuntimeInstaller } from "../components/RuntimeInstaller";
 import { Badge, Button, Card, ErrorNote } from "../components/ui";
 
 const statusTone: Record<ServiceStatus, "good" | "warn" | "bad" | "neutral"> = {
@@ -40,6 +41,13 @@ export function ServicesView() {
         </ul>
       </Card>
       <AddService />
+      <Card title="Download a database server">
+        <p className="mb-3 text-sm text-stone-500">
+          RED can download MySQL and PostgreSQL itself; they then appear under "Add a service".
+          Redis and Valkey come from Homebrew (<code>brew install valkey</code>).
+        </p>
+        <RuntimeInstaller kinds={["mysql", "postgres"]} />
+      </Card>
     </div>
   );
 }
@@ -156,8 +164,7 @@ function AddService() {
     <Card title="Add a service">
       {services.data && available.length === 0 ? (
         <p className="text-sm text-stone-500">
-          No database servers found. Install one with Homebrew, e.g. <code>brew install mysql</code>
-          , and it shows up here.
+          No database servers found yet. Download one below, or install one with Homebrew.
         </p>
       ) : (
         <form onSubmit={submit} className="flex flex-wrap items-center gap-2">

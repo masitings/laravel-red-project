@@ -51,6 +51,10 @@ pub mod endpoints {
     pub const DUMPS: &str = "/v1/dumps";
     /// `PUT`: switch dump capturing on or off.
     pub const DUMP_SETTINGS: &str = "/v1/dumps/settings";
+    /// `GET`: installed and downloadable runtimes, and installs in
+    /// progress. `POST`: install one (returns the job).
+    /// `DELETE /v1/runtimes/{kind}/{line}`: remove one.
+    pub const RUNTIMES: &str = "/v1/runtimes";
     /// `GET`: known log files.
     pub const LOGS: &str = "/v1/logs";
     /// `GET ?id=<log id>&lines=<n>`: the end of one log.
@@ -90,6 +94,11 @@ pub mod endpoints {
     /// `restart`.
     pub fn service_action(name: &str, action: &str) -> String {
         format!("{SERVICES}/{name}/{action}")
+    }
+
+    /// `/v1/runtimes/{kind}/{line}`
+    pub fn runtime(kind: &str, line: &str) -> String {
+        format!("{RUNTIMES}/{kind}/{line}")
     }
 
     /// `/v1/mail/{id}`

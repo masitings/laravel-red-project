@@ -76,7 +76,7 @@ fn php(app: &AppState) -> Check {
             "PHP",
             CheckStatus::Fail,
             "no php-fpm found",
-            Some("brew install php"),
+            Some("red php:install (or brew install php)"),
         );
     }
     let versions: Vec<String> = installs.iter().map(|i| i.full_version.clone()).collect();

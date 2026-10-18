@@ -38,11 +38,25 @@ impl Server {
 /// Homebrew prefixes on Apple Silicon and Intel.
 const BREW_OPT: [&str; 2] = ["/opt/homebrew/opt", "/usr/local/opt"];
 
-/// Candidate server binaries for `server`, most preferred first:
-/// Homebrew formulae, Postgres.app, the Oracle MySQL package, distribution
-/// packages, then `PATH`.
-pub fn server_candidates(server: Server) -> Vec<PathBuf> {
+/// Candidate server binaries for `server`, most preferred first: RED's
+/// own runtimes (`<data>/runtimes/{mysql,postgres}/*`), Homebrew formulae,
+/// Postgres.app, the Oracle MySQL package, distribution packages, then
+/// `PATH`.
+pub fn server_candidates(server: Server, data_dir: &Path) -> Vec<PathBuf> {
     let mut found = Vec::new();
+    let own = match server {
+        Server::Mysql => Some(("mysql", "bin/mysqld")),
+        Server::Postgres => Some(("postgres", "bin/postgres")),
+        Server::Redis => None,
+    };
+    if let Some((kind, binary)) = own {
+        for dir in sorted_dirs(&data_dir.join("runtimes").join(kind))
+            .into_iter()
+            .rev()
+        {
+            found.push(dir.join(binary));
+        }
+    }
     for opt in BREW_OPT {
         for dir in sorted_dirs(Path::new(opt)).into_iter().rev() {
             let name = file_name(&dir);
@@ -117,6 +131,14 @@ pub fn php_cli_for_fpm(fpm: &Path) -> Option<PathBuf> {
         candidates.push(prefix.join("bin").join("php"));
     }
     candidates.into_iter().find(|p| p.is_file())
+}
+
+/// The `php.ini` of a PHP installed by RED (`<root>/etc/php.ini` next to
+/// `<root>/bin/php` or `<root>/sbin/php-fpm`). Other PHP installations
+/// find their own ini file.
+pub fn php_ini_for(binary: &Path) -> Option<PathBuf> {
+    let ini = binary.parent()?.parent()?.join("etc").join("php.ini");
+    ini.is_file().then_some(ini)
 }
 
 /// Node.js binaries from nvm, fnm, Volta, asdf, mise, Homebrew and `PATH`.
@@ -242,6 +264,22 @@ mod tests {
         assert!(found.contains(&old) && found.contains(&new) && found.contains(&fnm));
         let pos = |p: &PathBuf| found.iter().position(|f| f == p).unwrap();
         assert!(pos(&new) < pos(&old), "newest first: {found:?}");
+    }
+
+    #[test]
+    fn finds_red_runtimes_first() {
+        let data = tempfile::tempdir().unwrap();
+        let pg = data.path().join("runtimes/postgres/18/bin/postgres");
+        touch(&pg);
+        let found = server_candidates(Server::Postgres, data.path());
+        assert_eq!(found.first(), Some(&pg));
+        let ini = data.path().join("runtimes/php/8.4/etc/php.ini");
+        touch(&ini);
+        assert_eq!(
+            php_ini_for(&data.path().join("runtimes/php/8.4/sbin/php-fpm")),
+            Some(ini)
+        );
+        assert_eq!(php_ini_for(Path::new("/usr/sbin/php-fpm8.3")), None);
     }
 
     #[test]

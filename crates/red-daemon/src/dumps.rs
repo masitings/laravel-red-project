@@ -254,7 +254,11 @@ async fn render(dumps: &Dumps, renderer: &Renderer, payload: &[u8]) -> Result<Du
         .ok_or("no PHP CLI binary found to render the dump")?;
     let script = dumps.script().map_err(|e| e.to_string())?;
 
-    let mut child = Command::new(php)
+    let mut command = Command::new(php);
+    if let Some(ini) = red_platform::binaries::php_ini_for(php) {
+        command.arg("-c").arg(ini);
+    }
+    let mut child = command
         .arg("-d")
         .arg("display_errors=stderr")
         .arg("-d")

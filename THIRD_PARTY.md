@@ -12,11 +12,18 @@ When code from another project is adapted, record it here:
 |---------|----------|---------|-----------------------|
 | _none yet_ | | | |
 
-Projects we plan to build on (not yet included):
+Software RED downloads at the user's request (not shipped with RED):
+
+| Software | Source | License |
+|----------|--------|---------|
+| PHP builds | [static-php-cli](https://github.com/crazywhalecc/static-php-cli) prebuilt binaries (`dl.static-php.dev`) | PHP License; static-php-cli is MIT; bundled libraries under their own licenses |
+| PostgreSQL | [zonky embedded-postgres-binaries](https://github.com/zonkyio/embedded-postgres-binaries) on Maven Central | PostgreSQL License; packaging Apache-2.0 |
+| MySQL | Oracle's official tarballs (`cdn.mysql.com/archives`) | GPL-2.0 with Oracle's exceptions |
+
+Projects we may build on later:
 
 | Project | Planned use | License |
 |---------|-------------|---------|
-| [static-php-cli](https://github.com/crazywhalecc/static-php-cli) | Building static PHP binaries (M3) | MIT |
 | [Laravel Valet](https://github.com/laravel/valet) | Reference for framework detection rules | MIT |
 
 Protocols RED speaks, implemented from their public documentation:

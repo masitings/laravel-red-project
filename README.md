@@ -22,8 +22,9 @@ Park a folder, open `https://my-app.test`. No Docker, no hand-written vhosts.
 
 ## Install
 
-RED uses the PHP already on your machine, so install PHP first
-(`brew install php`, plus `php@8.3` etc. for more versions).
+RED can download PHP itself (`red php:install`, or the PHP page in the
+app), and `red setup` installs the newest version when it finds none. PHP
+from Homebrew (`brew install php`) works too.
 
 Download `RED-<version>-macos-<arch>.dmg` from the
 [releases page](https://github.com/masitings/red-project/releases) and drag
@@ -51,7 +52,8 @@ cd ~/code/shop && red link      # or link a single project
 red sites                       # URL, driver, PHP version, HTTPS
 red which                       # which site and driver serve this directory
 
-red php:list                    # PHP versions found (Homebrew, system)
+red php:install 8.4             # download PHP 8.4, managed by RED
+red php:list                    # PHP versions found (RED's, Homebrew, system)
 red use 8.4                     # default PHP for all sites
 red isolate 8.2                 # pin the current site to PHP 8.2
 red unisolate
@@ -69,11 +71,15 @@ red events                      # watch what the daemon is doing
 
 ### Databases and caches
 
-RED runs MySQL or MariaDB, PostgreSQL, and Redis or Valkey from the
-binaries already on your machine (`brew install mysql postgresql@17 valkey`),
-each with its own data directory, port and log, bound to 127.0.0.1.
+RED runs MySQL or MariaDB, PostgreSQL, and Redis or Valkey, each with its
+own data directory, port and log, bound to 127.0.0.1. It can download MySQL
+and PostgreSQL itself, or use what Homebrew installed
+(`brew install mysql postgresql@17 valkey`).
 
 ```sh
+red runtimes                    # what RED installed and can download
+red runtimes:install postgres 18
+red runtimes:install mysql
 red services:add mysql          # or mariadb, postgres, redis, valkey
 red services:add postgres --name pg15 --server-version 15 --port 5433
 red services                    # status, plus the servers RED found
@@ -185,7 +191,7 @@ Where RED keeps its files:
 | M0 Foundation ✓ | Workspace, CI, Control API, GUI shell | Green build on macOS + Linux |
 | M1 MVP ✓ | Park/link, `.test` DNS, local HTTPS, multiple PHP versions, proxies with WebSocket, GUI for sites and PHP | v0.1.0 |
 | M2 Dev tools ✓ | MySQL/PostgreSQL/Valkey, mail catcher, dumps, log viewer, `red.toml`, Node per site, desktop app bundle | v0.2.0 |
-| M3 Distribution | Linux, our own static PHP builds, signed and notarized releases | Signed releases on both OSes |
+| M3 Distribution | Downloadable PHP/MySQL/PostgreSQL runtimes (done), Linux, signed and notarized releases | Signed releases on both OSes |
 | M4 Advanced | On-demand Xdebug, sharing/tunnels, profiler, MCP server, git workspaces | v1.0.0 |
 
 ## Contributing

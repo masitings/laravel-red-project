@@ -19,6 +19,7 @@ use crate::AppState;
 mod dumps;
 mod logs;
 mod mail;
+mod runtimes;
 mod services;
 
 pub(crate) type App = State<Arc<AppState>>;
@@ -53,6 +54,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .merge(mail::routes())
         .merge(dumps::routes())
         .merge(logs::routes())
+        .merge(runtimes::routes())
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
         .with_state(state)

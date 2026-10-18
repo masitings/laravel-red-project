@@ -44,6 +44,14 @@ percent-encoding = "2"
 mime_guess = "2"
 mail-parser = "0.11"
 base64 = "0.23"
+# runtime downloads
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "http2", "stream", "system-proxy"] }
+tar = "0.4"
+flate2 = "1"
+zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
+lzma-rust2 = { version = "0.23", default-features = false, features = ["std", "xz"] }
+sha2 = "0.11"
+rustls-platform-verifier = "0.7"
 ts-rs = { version = "11", features = ["serde-compat"] }
 
 # cli + diagnostics

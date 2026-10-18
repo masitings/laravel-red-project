@@ -93,7 +93,7 @@ impl ServiceManager {
     pub async fn discover(&self) -> Vec<ServerInstall> {
         let mut found = Vec::new();
         for kind in ServiceKind::ALL {
-            for binary in binaries::server_candidates(server(kind)) {
+            for binary in binaries::server_candidates(server(kind), &self.paths.data_dir) {
                 if let Some(server) = probe(kind, &binary).await {
                     found.push(ServerInstall { binary, server });
                 }
@@ -260,10 +260,13 @@ pub fn plan(
                 os("--bind-address=127.0.0.1"),
                 flag("socket", &socket),
                 flag("pid-file", &dir.join("server.pid")),
-                os("--skip-name-resolve"),
             ];
             if flavor == "mysql" {
+                // MySQL's root account is root@localhost; TCP clients on
+                // 127.0.0.1 only match it when host names are resolved.
                 run.push(os("--mysqlx=OFF"));
+            } else {
+                run.push(os("--skip-name-resolve"));
             }
             if as_root {
                 run.push(os("--user=root"));

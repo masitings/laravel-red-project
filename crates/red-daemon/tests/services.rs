@@ -9,10 +9,13 @@ use red_api::{
 };
 
 fn redis_server() -> Option<String> {
-    red_platform::binaries::server_candidates(red_platform::binaries::Server::Redis)
-        .into_iter()
-        .next()
-        .map(|p| p.display().to_string())
+    red_platform::binaries::server_candidates(
+        red_platform::binaries::Server::Redis,
+        std::path::Path::new("/nonexistent"),
+    )
+    .into_iter()
+    .next()
+    .map(|p| p.display().to_string())
 }
 
 fn free_port() -> u16 {
@@ -24,8 +27,13 @@ fn free_port() -> u16 {
 }
 
 async fn status(daemon: &common::Daemon, name: &str, want: ServiceStatus) -> ServiceInfo {
-    common::eventually(20, || async {
+    common::eventually(60, || async {
         let s: ServiceInfo = daemon.client.get(&endpoints::service(name)).await.ok()?;
+        assert!(
+            want == ServiceStatus::Failed || s.status != ServiceStatus::Failed,
+            "{name} failed: {:?}",
+            s.error
+        );
         (s.status == want).then_some(s)
     })
     .await

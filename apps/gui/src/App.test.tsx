@@ -10,6 +10,7 @@ import type { LogResponse } from "./api/gen/LogResponse";
 import type { MailMessage } from "./api/gen/MailMessage";
 import type { MailSummary } from "./api/gen/MailSummary";
 import type { PhpListResponse } from "./api/gen/PhpListResponse";
+import type { RuntimesResponse } from "./api/gen/RuntimesResponse";
 import type { ServicesResponse } from "./api/gen/ServicesResponse";
 import type { SiteInfo } from "./api/gen/SiteInfo";
 import type { StatusResponse } from "./api/gen/StatusResponse";
@@ -183,6 +184,26 @@ const log: LogResponse = {
   truncated: false,
 };
 
+const runtimes: RuntimesResponse = {
+  platform: "macos-aarch64",
+  installed: [
+    {
+      kind: "php",
+      line: "8.4",
+      version: "8.4.22",
+      path: "/data/runtimes/php/8.4",
+      installed: 1_760_000_000,
+    },
+  ],
+  available: [
+    { kind: "php", line: "8.5", version: "8.5.8" },
+    { kind: "php", line: "8.4", version: "8.4.23" },
+    { kind: "postgres", line: "18", version: "18.6.0" },
+  ],
+  jobs: [],
+  catalog_errors: [],
+};
+
 function mockDaemon() {
   vi.mocked(api).mockImplementation(async (method: string, path: string) => {
     if (method !== "GET") return null;
@@ -207,6 +228,8 @@ function mockDaemon() {
         return dumps;
       case "/v1/logs":
         return logs;
+      case "/v1/runtimes":
+        return runtimes;
       case `/v1/logs/read?id=${encodeURIComponent(laravelLog.id)}&lines=500`:
         return log;
       default:
@@ -271,6 +294,21 @@ describe("App", () => {
     fireEvent.click(screen.getByText("Make default"));
     await waitFor(() =>
       expect(api).toHaveBeenCalledWith("PUT", "/v1/php/default", { version: "8.2" }),
+    );
+  });
+
+  it("installs and updates PHP builds", async () => {
+    mockDaemon();
+    renderApp();
+    fireEvent.click(await screen.findByText("PHP"));
+    expect(await screen.findByText("8.4.22 installed")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Install"));
+    await waitFor(() =>
+      expect(api).toHaveBeenCalledWith("POST", "/v1/runtimes", { kind: "php", version: "8.5" }),
+    );
+    fireEvent.click(screen.getByText("Update"));
+    await waitFor(() =>
+      expect(api).toHaveBeenCalledWith("POST", "/v1/runtimes", { kind: "php", version: "8.4" }),
     );
   });
 

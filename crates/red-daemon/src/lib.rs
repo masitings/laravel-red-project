@@ -14,6 +14,7 @@ pub mod fastcgi;
 pub mod fpm;
 pub mod mail;
 pub mod proxy;
+pub mod runtimes;
 pub mod services;
 pub mod socket;
 pub mod tls;
@@ -81,6 +82,8 @@ pub struct AppState {
     pub via_helper: std::sync::atomic::AtomicBool,
     /// Where the helper listens.
     pub helper_socket: std::path::PathBuf,
+    /// Runtimes RED downloads itself.
+    pub runtimes: runtimes::RuntimeManager,
     /// Database and cache services.
     pub services: services::ServiceManager,
     /// Captured `dump()` output.
@@ -238,6 +241,7 @@ pub async fn run(paths: Paths, shutdown: impl Future<Output = ()>) -> Result<(),
     let app = Arc::new(AppState {
         php: PhpManager::new(paths.clone(), events.clone()),
         services: services::ServiceManager::new(paths.clone(), events.clone()),
+        runtimes: runtimes::RuntimeManager::new(&paths.data_dir, events.clone()),
         smtp_port: OnceLock::new(),
         dump_port: OnceLock::new(),
         mail: Arc::new(mail::MailStore::open(paths.mail_dir())),

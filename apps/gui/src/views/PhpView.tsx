@@ -1,7 +1,23 @@
 import { usePhp, useSetDefaultPhp } from "../api/queries";
+import { RuntimeInstaller } from "../components/RuntimeInstaller";
 import { Badge, Button, Card, ErrorNote } from "../components/ui";
 
 export function PhpView() {
+  return (
+    <div className="space-y-6">
+      <Versions />
+      <Card title="Install PHP">
+        <p className="mb-3 text-sm text-stone-500">
+          RED downloads self-contained PHP builds (with the common extensions) from static-php-cli.
+          No Homebrew needed.
+        </p>
+        <RuntimeInstaller kinds={["php"]} />
+      </Card>
+    </div>
+  );
+}
+
+function Versions() {
   const php = usePhp();
   const setDefault = useSetDefaultPhp();
   const installs = php.data?.installs ?? [];
@@ -11,8 +27,7 @@ export function PhpView() {
       <ErrorNote error={php.error ?? setDefault.error} />
       {php.data && installs.length === 0 && (
         <p className="text-sm text-stone-500">
-          No PHP found. Install one, for example with <code>brew install php</code>, and it will
-          show up here.
+          No PHP yet. Install one below, or with <code>brew install php</code>.
         </p>
       )}
       <ul className="divide-y divide-stone-100 dark:divide-stone-800">

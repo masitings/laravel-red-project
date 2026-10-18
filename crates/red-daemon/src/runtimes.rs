@@ -1,0 +1,777 @@
+//! Downloading, verifying and unpacking runtimes (PHP, MySQL, PostgreSQL)
+//! into `<data>/runtimes/<kind>/<line>/`.
+//!
+//! Installs run as background jobs; `GET /v1/runtimes` reports their
+//! progress and `RuntimesChanged` events announce changes. A runtime is
+//! unpacked into a staging directory and only renamed into place once it is
+//! complete, so a failed or interrupted download never leaves a broken
+//! runtime behind.
+
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use futures_util::StreamExt;
+use red_api::{Event, JobState, RuntimeInfo, RuntimeJob, RuntimeRelease};
+use red_core::runtimes::{
+    self, Artifact, Format, Layout, ListingEntry, MARKER_FILE, Marker, Platform, Release,
+    RuntimeKind,
+};
+use sha2::{Digest, Sha256};
+use tokio::io::AsyncWriteExt;
+
+use crate::AppState;
+
+/// Catalogs are fetched again after this long.
+const CATALOG_TTL: Duration = Duration::from_secs(600);
+/// Jobs kept in the list once finished.
+const KEEP_JOBS: usize = 20;
+/// Progress events are sent at most this often per job.
+const PROGRESS_EVERY: Duration = Duration::from_millis(400);
+
+/// What the remote catalogs said, for this platform.
+#[derive(Debug, Clone, Default)]
+struct Catalog {
+    php: Vec<ListingEntry>,
+    postgres: Vec<String>,
+    errors: Vec<String>,
+}
+
+/// Owns runtime downloads.
+#[derive(Debug)]
+pub struct RuntimeManager {
+    root: PathBuf,
+    platform: Option<Platform>,
+    events: tokio::sync::broadcast::Sender<Event>,
+    jobs: Mutex<Vec<RuntimeJob>>,
+    next_id: AtomicU64,
+    catalog: tokio::sync::Mutex<Option<(Instant, Catalog)>>,
+    http: std::sync::OnceLock<Result<reqwest::Client, String>>,
+}
+
+pub(crate) fn api_kind(kind: RuntimeKind) -> red_api::RuntimeKind {
+    match kind {
+        RuntimeKind::Php => red_api::RuntimeKind::Php,
+        RuntimeKind::Mysql => red_api::RuntimeKind::Mysql,
+        RuntimeKind::Postgres => red_api::RuntimeKind::Postgres,
+    }
+}
+
+pub(crate) fn core_kind(kind: red_api::RuntimeKind) -> RuntimeKind {
+    match kind {
+        red_api::RuntimeKind::Php => RuntimeKind::Php,
+        red_api::RuntimeKind::Mysql => RuntimeKind::Mysql,
+        red_api::RuntimeKind::Postgres => RuntimeKind::Postgres,
+    }
+}
+
+impl RuntimeManager {
+    pub fn new(data_dir: &Path, events: tokio::sync::broadcast::Sender<Event>) -> Self {
+        Self {
+            root: data_dir.join("runtimes"),
+            platform: Platform::current(),
+            events,
+            jobs: Mutex::new(Vec::new()),
+            next_id: AtomicU64::new(1),
+            catalog: tokio::sync::Mutex::new(None),
+            http: std::sync::OnceLock::new(),
+        }
+    }
+
+    pub fn platform_name(&self) -> String {
+        self.platform
+            .map(Platform::name)
+            .unwrap_or_else(|| "unsupported".into())
+    }
+
+    fn http(&self) -> Result<reqwest::Client, String> {
+        self.http
+            .get_or_init(|| {
+                use rustls_platform_verifier::BuilderVerifierExt;
+                let provider = Arc::new(rustls::crypto::ring::default_provider());
+                let tls = rustls::ClientConfig::builder_with_provider(provider)
+                    .with_safe_default_protocol_versions()
+                    .map_err(|e| e.to_string())?
+                    .with_platform_verifier()
+                    .map_err(|e| e.to_string())?
+                    .with_no_client_auth();
+                reqwest::Client::builder()
+                    .tls_backend_preconfigured(tls)
+                    .user_agent(concat!("RED/", env!("CARGO_PKG_VERSION")))
+                    .connect_timeout(Duration::from_secs(20))
+                    .read_timeout(Duration::from_secs(60))
+                    .build()
+                    .map_err(|e| e.to_string())
+            })
+            .clone()
+    }
+
+    /// Runtimes installed by RED, by kind then newest line first.
+    pub fn installed(&self) -> Vec<RuntimeInfo> {
+        let mut found = Vec::new();
+        for kind in RuntimeKind::ALL {
+            let Ok(entries) = std::fs::read_dir(self.root.join(kind.as_str())) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let dir = entry.path();
+                let Ok(bytes) = std::fs::read(dir.join(MARKER_FILE)) else {
+                    continue;
+                };
+                if let Ok(marker) = serde_json::from_slice::<Marker>(&bytes) {
+                    found.push(RuntimeInfo {
+                        kind: api_kind(marker.kind),
+                        line: marker.line,
+                        version: marker.version,
+                        path: dir.display().to_string(),
+                        installed: marker.installed,
+                    });
+                }
+            }
+        }
+        found.sort_by(|a, b| {
+            (a.kind as u8)
+                .cmp(&(b.kind as u8))
+                .then_with(|| compare(&b.line, &a.line))
+        });
+        found
+    }
+
+    /// Recent jobs, newest first.
+    pub fn jobs(&self) -> Vec<RuntimeJob> {
+        let mut jobs = self.jobs.lock().expect("jobs poisoned").clone();
+        jobs.reverse();
+        jobs
+    }
+
+    async fn catalog(&self) -> Catalog {
+        let mut cached = self.catalog.lock().await;
+        if let Some((at, catalog)) = cached.as_ref()
+            && at.elapsed() < CATALOG_TTL
+            && catalog.errors.is_empty()
+        {
+            return catalog.clone();
+        }
+        let mut catalog = Catalog::default();
+        let Some(platform) = self.platform else {
+            catalog.errors.push("this platform is not supported".into());
+            return catalog;
+        };
+        match self.http() {
+            Err(err) => catalog.errors.push(format!("HTTP client: {err}")),
+            Ok(http) => {
+                let php = async {
+                    http.get(runtimes::PHP_LISTING_URL)
+                        .send()
+                        .await?
+                        .error_for_status()?
+                        .text()
+                        .await
+                };
+                let pg = async {
+                    http.get(runtimes::pg_metadata_url(platform))
+                        .send()
+                        .await?
+                        .error_for_status()?
+                        .text()
+                        .await
+                };
+                let (php, pg) = tokio::join!(php, pg);
+                match php.map(|text| serde_json::from_str::<Vec<ListingEntry>>(&text)) {
+                    Ok(Ok(listing)) => catalog.php = listing,
+                    Ok(Err(err)) => catalog
+                        .errors
+                        .push(format!("PHP builds: unexpected listing: {err}")),
+                    Err(err) => catalog.errors.push(format!("PHP builds: {err}")),
+                }
+                match pg {
+                    Ok(xml) => catalog.postgres = runtimes::parse_maven_versions(&xml),
+                    Err(err) => catalog.errors.push(format!("PostgreSQL builds: {err}")),
+                }
+            }
+        }
+        *cached = Some((Instant::now(), catalog.clone()));
+        catalog
+    }
+
+    /// Newest version of every line available for this platform, and why
+    /// some catalogs could not be read.
+    pub async fn available(&self) -> (Vec<RuntimeRelease>, Vec<String>) {
+        let catalog = self.catalog().await;
+        let Some(platform) = self.platform else {
+            return (Vec::new(), catalog.errors);
+        };
+        let mut releases = Vec::new();
+        for (line, version) in runtimes::php_lines(&catalog.php, platform) {
+            releases.push(RuntimeRelease {
+                kind: red_api::RuntimeKind::Php,
+                line,
+                version,
+            });
+        }
+        for release in runtimes::mysql_releases(platform) {
+            if !releases
+                .iter()
+                .any(|r| r.kind == red_api::RuntimeKind::Mysql && r.line == release.line)
+            {
+                releases.push(RuntimeRelease {
+                    kind: red_api::RuntimeKind::Mysql,
+                    line: release.line,
+                    version: release.version,
+                });
+            }
+        }
+        for (line, version) in runtimes::pg_lines(&catalog.postgres) {
+            releases.push(RuntimeRelease {
+                kind: red_api::RuntimeKind::Postgres,
+                line,
+                version,
+            });
+        }
+        (releases, catalog.errors)
+    }
+
+    async fn resolve(&self, kind: RuntimeKind, wanted: &str) -> Result<Release, String> {
+        let platform = self
+            .platform
+            .ok_or("RED cannot download runtimes for this platform")?;
+        let catalog = self.catalog().await;
+        let release = match kind {
+            RuntimeKind::Php => runtimes::php_release(&catalog.php, wanted, platform),
+            RuntimeKind::Mysql => runtimes::mysql_release(wanted, platform),
+            RuntimeKind::Postgres => runtimes::pg_release(&catalog.postgres, wanted, platform),
+        };
+        release.ok_or_else(|| {
+            let mut message = if wanted.is_empty() {
+                format!("no {kind} build is available for {}", platform.name())
+            } else {
+                format!(
+                    "no {kind} {wanted} build is available for {}",
+                    platform.name()
+                )
+            };
+            if !catalog.errors.is_empty() {
+                message.push_str(&format!(" ({})", catalog.errors.join("; ")));
+            }
+            message
+        })
+    }
+
+    fn update_job(&self, id: u64, change: impl FnOnce(&mut RuntimeJob)) {
+        if let Some(job) = self
+            .jobs
+            .lock()
+            .expect("jobs poisoned")
+            .iter_mut()
+            .find(|j| j.id == id)
+        {
+            change(job);
+        }
+        let _ = self.events.send(Event::RuntimesChanged);
+    }
+
+    /// Remove an installed runtime.
+    pub fn remove(&self, kind: RuntimeKind, line: &str) -> Result<bool, String> {
+        if !valid_line(line) {
+            return Err(format!("{line:?} is not a version line"));
+        }
+        let dir = self.root.join(kind.as_str()).join(line);
+        if !dir.join(MARKER_FILE).is_file() {
+            return Ok(false);
+        }
+        std::fs::remove_dir_all(&dir)
+            .map_err(|e| format!("cannot delete {}: {e}", dir.display()))?;
+        let _ = self.events.send(Event::RuntimesChanged);
+        Ok(true)
+    }
+}
+
+/// Start installing `kind` `wanted`. Returns the job right away; the
+/// download continues in the background.
+pub async fn install(
+    app: Arc<AppState>,
+    kind: RuntimeKind,
+    wanted: &str,
+) -> Result<RuntimeJob, String> {
+    let manager = &app.runtimes;
+    let release = manager.resolve(kind, wanted).await?;
+    {
+        let jobs = manager.jobs.lock().expect("jobs poisoned");
+        if let Some(running) = jobs.iter().find(|j| {
+            j.kind == api_kind(kind)
+                && j.line == release.line
+                && matches!(j.state, JobState::Downloading | JobState::Extracting)
+        }) {
+            return Ok(running.clone());
+        }
+    }
+    let job = RuntimeJob {
+        id: manager.next_id.fetch_add(1, Ordering::Relaxed),
+        kind: api_kind(kind),
+        line: release.line.clone(),
+        version: release.version.clone(),
+        state: JobState::Downloading,
+        received: 0,
+        total: None,
+        error: None,
+    };
+    {
+        let mut jobs = manager.jobs.lock().expect("jobs poisoned");
+        jobs.push(job.clone());
+        let excess = jobs.len().saturating_sub(KEEP_JOBS);
+        jobs.drain(..excess);
+    }
+    let _ = manager.events.send(Event::RuntimesChanged);
+    let id = job.id;
+    tokio::spawn(async move {
+        let result = run(&app, id, &release).await;
+        let manager = &app.runtimes;
+        match result {
+            Ok(()) => {
+                tracing::info!(kind = %release.kind, version = %release.version, "runtime installed");
+                manager.update_job(id, |j| j.state = JobState::Done);
+                after_install(&app, &release).await;
+            }
+            Err(err) => {
+                tracing::warn!(kind = %release.kind, version = %release.version, %err, "runtime install failed");
+                manager.update_job(id, |j| {
+                    j.state = JobState::Failed;
+                    j.error = Some(err);
+                });
+            }
+        }
+    });
+    Ok(job)
+}
+
+/// Let the rest of the daemon see the new runtime.
+async fn after_install(app: &AppState, release: &Release) {
+    match release.kind {
+        RuntimeKind::Php => {
+            // A pool still running the replaced binary is restarted on its
+            // next request with the new one.
+            app.php.restart(&release.line).await;
+            app.php.discover().await;
+        }
+        RuntimeKind::Mysql | RuntimeKind::Postgres => {
+            app.services.discover().await;
+            let _ = app.events.send(Event::ServicesChanged);
+        }
+    }
+}
+
+async fn run(app: &AppState, id: u64, release: &Release) -> Result<(), String> {
+    let manager = &app.runtimes;
+    let http = manager.http()?;
+    let kind_dir = manager.root.join(release.kind.as_str());
+    let downloads = manager.root.join(".downloads");
+    let staging = kind_dir.join(format!(".staging-{}-{id}", release.line));
+    for dir in [&kind_dir, &downloads] {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    }
+    let _ = std::fs::remove_dir_all(&staging);
+    std::fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
+
+    let result = async {
+        // Download everything first, so the total is known as early as possible.
+        let mut files = Vec::new();
+        let mut received_before = 0;
+        for (index, artifact) in release.artifacts.iter().enumerate() {
+            let file = downloads.join(format!("{id}-{index}"));
+            let size = download(&http, artifact, &file, |received, total| {
+                manager.update_job_throttled(
+                    id,
+                    received_before + received,
+                    total.map(|t| received_before + t),
+                );
+            })
+            .await?;
+            received_before += size;
+            files.push(file);
+        }
+        manager.update_job(id, |j| {
+            j.state = JobState::Extracting;
+            j.received = received_before;
+            j.total = Some(received_before);
+        });
+        let staging_clone = staging.clone();
+        let artifacts = release.artifacts.clone();
+        let files_clone = files.clone();
+        tokio::task::spawn_blocking(move || {
+            for (artifact, file) in artifacts.iter().zip(&files_clone) {
+                unpack(file, artifact.format, &artifact.layout, &staging_clone)?;
+            }
+            Ok::<_, String>(())
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        for file in &files {
+            let _ = std::fs::remove_file(file);
+        }
+        finish(&staging, release)?;
+        let dest = kind_dir.join(&release.line);
+        if dest.exists() {
+            // Keep the user's php.ini across updates.
+            let ini = dest.join("etc/php.ini");
+            if ini.is_file() {
+                let _ = std::fs::copy(&ini, staging.join("etc/php.ini"));
+            }
+            std::fs::remove_dir_all(&dest)
+                .map_err(|e| format!("cannot replace {}: {e}", dest.display()))?;
+        }
+        std::fs::rename(&staging, &dest)
+            .map_err(|e| format!("cannot install into {}: {e}", dest.display()))?;
+        Ok(())
+    }
+    .await;
+    if result.is_err() {
+        let _ = std::fs::remove_dir_all(&staging);
+    }
+    result
+}
+
+impl RuntimeManager {
+    fn update_job_throttled(&self, id: u64, received: u64, total: Option<u64>) {
+        static LAST: Mutex<Option<Instant>> = Mutex::new(None);
+        let mut jobs = self.jobs.lock().expect("jobs poisoned");
+        if let Some(job) = jobs.iter_mut().find(|j| j.id == id) {
+            job.received = received;
+            if total.is_some() {
+                job.total = total;
+            }
+        }
+        drop(jobs);
+        let mut last = LAST.lock().expect("throttle poisoned");
+        if last.is_none_or(|t| t.elapsed() >= PROGRESS_EVERY) {
+            *last = Some(Instant::now());
+            let _ = self.events.send(Event::RuntimesChanged);
+        }
+    }
+}
+
+/// Download `artifact` to `dest`, checking its SHA-256 when one is known.
+/// Returns the number of bytes.
+async fn download(
+    http: &reqwest::Client,
+    artifact: &Artifact,
+    dest: &Path,
+    mut progress: impl FnMut(u64, Option<u64>),
+) -> Result<u64, String> {
+    let expected = match (&artifact.sha256, &artifact.sha256_url) {
+        (Some(sum), _) => Some(sum.to_ascii_lowercase()),
+        (None, Some(url)) => {
+            let text = http
+                .get(url)
+                .send()
+                .await
+                .and_then(reqwest::Response::error_for_status)
+                .map_err(|e| format!("checksum for {}: {e}", artifact.url))?
+                .text()
+                .await
+                .map_err(|e| e.to_string())?;
+            Some(
+                text.split_whitespace()
+                    .next()
+                    .unwrap_or_default()
+                    .to_ascii_lowercase(),
+            )
+        }
+        (None, None) => None,
+    };
+    let response = http
+        .get(&artifact.url)
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(|e| format!("{}: {e}", artifact.url))?;
+    let total = response.content_length();
+    let mut file = tokio::fs::File::create(dest)
+        .await
+        .map_err(|e| format!("cannot write {}: {e}", dest.display()))?;
+    let mut hasher = Sha256::new();
+    let mut received = 0u64;
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("download interrupted: {e}"))?;
+        hasher.update(&chunk);
+        file.write_all(&chunk).await.map_err(|e| e.to_string())?;
+        received += chunk.len() as u64;
+        progress(received, total);
+    }
+    file.flush().await.map_err(|e| e.to_string())?;
+    if let Some(total) = total
+        && total != received
+    {
+        return Err(format!("download incomplete: {received} of {total} bytes"));
+    }
+    let actual = hex(&hasher.finalize());
+    if let Some(expected) = expected
+        && expected != actual
+    {
+        let _ = std::fs::remove_file(dest);
+        return Err(format!(
+            "checksum mismatch for {}: expected {expected}, got {actual}",
+            artifact.url
+        ));
+    }
+    Ok(received)
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Unpack `file` into `dest` according to `layout`.
+pub fn unpack(file: &Path, format: Format, layout: &Layout, dest: &Path) -> Result<(), String> {
+    let open = || std::fs::File::open(file).map_err(|e| e.to_string());
+    match format {
+        Format::TarGz => untar(flate2::read::GzDecoder::new(open()?), layout, dest),
+        Format::TarXz => untar(
+            lzma_rust2::XzReader::new(std::io::BufReader::new(open()?), true),
+            layout,
+            dest,
+        ),
+        Format::JarTxz => {
+            let mut zip = zip::ZipArchive::new(open()?).map_err(|e| format!("bad archive: {e}"))?;
+            let mut index = None;
+            for i in 0..zip.len() {
+                let entry = zip.by_index(i).map_err(|e| e.to_string())?;
+                if entry.name().is_ok_and(|n| n.ends_with(".txz")) {
+                    index = Some(i);
+                    break;
+                }
+            }
+            let index = index.ok_or("the archive holds no .txz")?;
+            let entry = zip.by_index(index).map_err(|e| e.to_string())?;
+            untar(
+                lzma_rust2::XzReader::new(std::io::BufReader::new(entry), true),
+                layout,
+                dest,
+            )
+        }
+    }
+}
+
+fn untar(reader: impl Read, layout: &Layout, dest: &Path) -> Result<(), String> {
+    let mut archive = tar::Archive::new(reader);
+    archive.set_preserve_permissions(true);
+    archive.set_overwrite(true);
+    match layout {
+        Layout::Flat => archive
+            .unpack(dest)
+            .map_err(|e| format!("cannot unpack: {e}")),
+        Layout::StripTopDir => {
+            let temp = dest.join(".unpack");
+            archive
+                .unpack(&temp)
+                .map_err(|e| format!("cannot unpack: {e}"))?;
+            let top: Vec<PathBuf> = std::fs::read_dir(&temp)
+                .map_err(|e| e.to_string())?
+                .flatten()
+                .map(|e| e.path())
+                .collect();
+            let [top] = top.as_slice() else {
+                return Err("expected one top-level directory in the archive".into());
+            };
+            for entry in std::fs::read_dir(top).map_err(|e| e.to_string())?.flatten() {
+                std::fs::rename(entry.path(), dest.join(entry.file_name()))
+                    .map_err(|e| e.to_string())?;
+            }
+            std::fs::remove_dir_all(&temp).map_err(|e| e.to_string())
+        }
+        Layout::Single { to } => {
+            let mut entries = archive.entries().map_err(|e| e.to_string())?;
+            let mut entry = loop {
+                let entry = entries
+                    .next()
+                    .ok_or("the archive is empty")?
+                    .map_err(|e| e.to_string())?;
+                if entry.header().entry_type().is_file() {
+                    break entry;
+                }
+            };
+            let target = dest.join(to);
+            if let Some(dir) = target.parent() {
+                std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+            }
+            let mut out = std::fs::File::create(&target).map_err(|e| e.to_string())?;
+            std::io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
+            set_executable(&target)
+        }
+    }
+}
+
+fn set_executable(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+        .map_err(|e| e.to_string())
+}
+
+/// Final touches inside the staging directory: `php.ini` for PHP, the
+/// marker for every runtime, and a quick check that the binary runs.
+fn finish(staging: &Path, release: &Release) -> Result<(), String> {
+    let binary = match release.kind {
+        RuntimeKind::Php => {
+            let etc = staging.join("etc");
+            std::fs::create_dir_all(&etc).map_err(|e| e.to_string())?;
+            std::fs::write(etc.join("php.ini"), runtimes::PHP_INI).map_err(|e| e.to_string())?;
+            staging.join("sbin/php-fpm")
+        }
+        RuntimeKind::Mysql => staging.join("bin/mysqld"),
+        RuntimeKind::Postgres => staging.join("bin/postgres"),
+    };
+    if !binary.is_file() {
+        return Err(format!("{} is missing from the download", binary.display()));
+    }
+    if cfg!(target_os = "macos") {
+        ensure_signed(staging);
+    }
+    let output = std::process::Command::new(&binary)
+        .arg(if release.kind == RuntimeKind::Php {
+            "-v"
+        } else {
+            "--version"
+        })
+        .output()
+        .map_err(|e| format!("cannot run {}: {e}", binary.display()))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let mut message = format!(
+            "{} does not run on this machine: {}",
+            binary.display(),
+            stderr.trim()
+        );
+        if stderr.contains("libaio") {
+            message.push_str(
+                " (install libaio: `sudo apt install libaio1t64` and, on Ubuntu 24.04+, \
+                 `sudo ln -s libaio.so.1t64 /usr/lib/x86_64-linux-gnu/libaio.so.1`)",
+            );
+        }
+        return Err(message);
+    }
+    let marker = Marker {
+        kind: release.kind,
+        line: release.line.clone(),
+        version: release.version.clone(),
+        installed: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or_default(),
+    };
+    std::fs::write(
+        staging.join(MARKER_FILE),
+        serde_json::to_vec_pretty(&marker).expect("marker serialises"),
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Apple Silicon refuses to run executables without a valid signature.
+/// Give any executable in `bin/` or `sbin/` whose signature does not verify
+/// an ad-hoc one, which is what a local build would have.
+fn ensure_signed(root: &Path) {
+    for dir in ["bin", "sbin"] {
+        let Ok(entries) = std::fs::read_dir(root.join(dir)) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() || path.is_symlink() {
+                continue;
+            }
+            let verified = std::process::Command::new("codesign")
+                .arg("--verify")
+                .arg(&path)
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success());
+            if !verified {
+                let signed = std::process::Command::new("codesign")
+                    .args(["--force", "--sign", "-"])
+                    .arg(&path)
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .is_ok_and(|s| s.success());
+                tracing::debug!(path = %path.display(), signed, "ad-hoc signed a runtime binary");
+            }
+        }
+    }
+}
+
+/// A version line is digits and dots only (it becomes a directory name).
+fn valid_line(line: &str) -> bool {
+    !line.is_empty()
+        && line.len() <= 16
+        && !line.starts_with('.')
+        && line.bytes().all(|b| b.is_ascii_digit() || b == b'.')
+}
+
+fn compare(a: &str, b: &str) -> std::cmp::Ordering {
+    let parts = |v: &str| -> Vec<u64> { v.split('.').map(|p| p.parse().unwrap_or(0)).collect() };
+    parts(a).cmp(&parts(b))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tar_gz(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut builder = tar::Builder::new(flate2::write::GzEncoder::new(
+            Vec::new(),
+            flate2::Compression::fast(),
+        ));
+        for (path, data) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(data.len() as u64);
+            header.set_mode(0o755);
+            header.set_cksum();
+            builder.append_data(&mut header, path, *data).unwrap();
+        }
+        builder.into_inner().unwrap().finish().unwrap()
+    }
+
+    #[test]
+    fn unpacks_single_files_and_trees() {
+        let dir = tempfile::tempdir().unwrap();
+        let single = dir.path().join("fpm.tar.gz");
+        std::fs::write(&single, tar_gz(&[("php-fpm", b"binary")])).unwrap();
+        let dest = dir.path().join("rt");
+        std::fs::create_dir_all(&dest).unwrap();
+        unpack(
+            &single,
+            Format::TarGz,
+            &Layout::Single {
+                to: "sbin/php-fpm".into(),
+            },
+            &dest,
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(dest.join("sbin/php-fpm")).unwrap(), b"binary");
+
+        let tree = dir.path().join("mysql.tar.gz");
+        std::fs::write(
+            &tree,
+            tar_gz(&[
+                ("mysql-8.4/bin/mysqld", b"x"),
+                ("mysql-8.4/share/errmsg.sys", b"y"),
+            ]),
+        )
+        .unwrap();
+        let dest = dir.path().join("mysql");
+        std::fs::create_dir_all(&dest).unwrap();
+        unpack(&tree, Format::TarGz, &Layout::StripTopDir, &dest).unwrap();
+        assert!(dest.join("bin/mysqld").is_file());
+        assert!(dest.join("share/errmsg.sys").is_file());
+        assert!(!dest.join(".unpack").exists());
+    }
+
+    #[test]
+    fn version_lines_cannot_escape() {
+        assert!(valid_line("8.4"));
+        assert!(!valid_line("../8"));
+        assert!(!valid_line(".."));
+        assert!(!valid_line(""));
+    }
+}

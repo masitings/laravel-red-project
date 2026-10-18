@@ -174,9 +174,20 @@ fn parent(path: &Path) -> &Path {
     path.parent().unwrap_or(Path::new("/"))
 }
 
+/// `-c <php.ini>` for PHP builds installed by RED, which have no ini file
+/// of their own.
+fn ini_args(php: &Path) -> Vec<OsString> {
+    match red_platform::binaries::php_ini_for(php) {
+        Some(ini) => vec!["-c".into(), ini.into_os_string()],
+        None => Vec::new(),
+    }
+}
+
 pub(crate) async fn php(ctx: &Ctx<'_>, args: &[OsString]) -> anyhow::Result<()> {
     let php = resolve_php(ctx).await?;
-    exec(&php.binary, args, &[parent(&php.binary)])
+    let mut full = ini_args(&php.binary);
+    full.extend_from_slice(args);
+    exec(&php.binary, &full, &[parent(&php.binary)])
 }
 
 pub(crate) async fn composer(ctx: &Ctx<'_>, args: &[OsString]) -> anyhow::Result<()> {
@@ -186,7 +197,8 @@ pub(crate) async fn composer(ctx: &Ctx<'_>, args: &[OsString]) -> anyhow::Result
         .chain(red_platform::binaries::in_path("composer.phar"))
         .next()
         .context("composer was not found on PATH; install it with `brew install composer`")?;
-    let mut full = vec![composer.into_os_string()];
+    let mut full = ini_args(&php.binary);
+    full.push(composer.into_os_string());
     full.extend_from_slice(args);
     exec(&php.binary, &full, &[parent(&php.binary)])
 }
