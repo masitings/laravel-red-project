@@ -27,7 +27,13 @@ fi
 
 ./spc doctor --auto-fix
 ./spc download --with-php="$line" --for-extensions="$extensions" --prefer-pre-built --retry=3
-./spc build --build-cli --build-fpm "$extensions"
+if ! ./spc build --build-cli --build-fpm "$extensions"; then
+  # spc only prints the failing command; show the compiler's actual errors.
+  echo "::group::compiler errors (log/spc.shell.log)"
+  grep -n -E "error:|Error [0-9]+|undefined symbol|ld: " log/spc.shell.log | tail -60 || true
+  echo "::endgroup::"
+  exit 1
+fi
 
 version=$(buildroot/bin/php -r 'echo PHP_VERSION;')
 case "$version" in

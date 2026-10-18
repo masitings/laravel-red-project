@@ -9,7 +9,8 @@ on:
     inputs:
       php_lines:
         description: PHP lines to build (space separated, empty for none)
-        default: "8.1 8.2 8.3 8.4 8.5"
+        # 8.1 is end of life (31 Dec 2025); RED falls back to static-php-cli's build for it.
+        default: "8.2 8.3 8.4 8.5"
       valkey:
         description: Build the newest Valkey release
         type: boolean
@@ -35,7 +36,7 @@ jobs:
     steps:
       - id: plan
         env:
-          PHP_LINES: ${{ github.event_name == 'schedule' && '8.1 8.2 8.3 8.4 8.5' || inputs.php_lines }}
+          PHP_LINES: ${{ github.event_name == 'schedule' && '8.2 8.3 8.4 8.5' || inputs.php_lines }}
           BUILD_VALKEY: ${{ github.event_name == 'schedule' || inputs.valkey }}
         run: |
           php=$(printf '%s\n' $PHP_LINES | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')
@@ -79,6 +80,13 @@ jobs:
         with:
           name: php-${{ matrix.line }}-${{ matrix.platform }}
           path: out/*
+      - name: Keep the build logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-php-${{ matrix.line }}-${{ matrix.platform }}
+          path: ${{ runner.temp }}/red-php-${{ matrix.line }}-${{ matrix.platform }}/log/
+          retention-days: 14
 
   valkey:
     name: Valkey ${{ needs.plan.outputs.valkey }} (${{ matrix.platform }})
