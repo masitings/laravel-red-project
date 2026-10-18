@@ -1,0 +1,36 @@
+[package]
+name = "red-daemon"
+description = "redd: the RED Project daemon (Control API, and later web server, DNS and supervisor)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "redd"
+path = "src/main.rs"
+
+[dependencies]
+red-core.workspace = true
+red-api.workspace = true
+red-platform.workspace = true
+
+tokio.workspace = true
+axum.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+tower.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+red-api = { workspace = true, features = ["client"] }
+tempfile.workspace = true
+
+[lints]
+workspace = true

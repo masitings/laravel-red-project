@@ -1,0 +1,27 @@
+[package]
+name = "red-api"
+description = "Control API types for RED Project, shared by the daemon, CLI and GUI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+# Async client that talks to `redd` over its unix socket.
+client = ["dep:tokio", "dep:hyper", "dep:hyper-util", "dep:http-body-util", "dep:thiserror"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+ts-rs.workspace = true
+
+tokio = { workspace = true, optional = true }
+hyper = { workspace = true, optional = true }
+hyper-util = { workspace = true, optional = true }
+http-body-util = { workspace = true, optional = true }
+thiserror = { workspace = true, optional = true }
+
+[lints]
+workspace = true

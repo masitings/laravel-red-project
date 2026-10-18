@@ -1,0 +1,30 @@
+[package]
+name = "red-gui"
+description = "Desktop GUI for RED Project (Tauri 2 shell around the React app)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lib]
+name = "red_gui_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+red-api = { workspace = true, features = ["client"] }
+red-platform.workspace = true
+
+tauri = { version = "2", features = [] }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true
