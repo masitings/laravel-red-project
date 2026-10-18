@@ -40,9 +40,12 @@ case "$version" in
   "$line".*) ;;
   *) echo "built PHP $version, expected $line.x" >&2; exit 1 ;;
 esac
-buildroot/bin/php -m
+# Capture once: `php -m | grep -q` lets grep exit early, php then dies of
+# SIGPIPE and pipefail reports a missing extension that is really there.
+modules=$(buildroot/bin/php -n -m)
+printf '%s\n' "$modules"
 for ext in pdo_sqlite pdo_pgsql pdo_mysql intl redis; do
-  buildroot/bin/php -m | grep -qx "$ext" || { echo "missing extension $ext" >&2; exit 1; }
+  grep -qx "$ext" <<<"$modules" || { echo "missing extension $ext" >&2; exit 1; }
 done
 
 rm -rf rt && mkdir -p rt/bin rt/sbin
