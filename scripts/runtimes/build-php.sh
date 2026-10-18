@@ -25,6 +25,15 @@ if [ ! -x spc ]; then
   chmod +x spc
 fi
 
+# PHP 8.1's bcmath still has K&R-style function definitions, which the
+# newer Apple clang rejects; build it as C17. (spc lets the environment
+# override its env.ini; this is its macOS default plus -std=gnu17.)
+if [ "$line" = "8.1" ] && [[ $platform == macos-* ]]; then
+  arch=${platform#macos-}
+  [ "$arch" = aarch64 ] && arch=arm64
+  export SPC_CMD_VAR_PHP_MAKE_EXTRA_CFLAGS="-g -fstack-protector-strong -fpic -fpie -Werror=unknown-warning-option --target=$arch-apple-darwin -Os -std=gnu17"
+fi
+
 ./spc doctor --auto-fix
 ./spc download --with-php="$line" --for-extensions="$extensions" --prefer-pre-built --retry=3
 if ! ./spc build --build-cli --build-fpm "$extensions"; then
