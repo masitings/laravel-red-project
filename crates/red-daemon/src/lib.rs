@@ -91,6 +91,8 @@ pub struct AppState {
     pub smtp_port: OnceLock<u16>,
     /// Port of the dump server, once bound.
     pub dump_port: OnceLock<u16>,
+    /// Why the web server is not on its configured ports, for `red doctor`.
+    pub web_notes: std::sync::Mutex<Vec<String>>,
     /// Change notifications for `GET /v1/events` subscribers.
     pub events: tokio::sync::broadcast::Sender<red_api::Event>,
     state: RwLock<State>,
@@ -239,6 +241,7 @@ pub async fn run(paths: Paths, shutdown: impl Future<Output = ()>) -> Result<(),
         smtp_port: OnceLock::new(),
         dump_port: OnceLock::new(),
         mail: Arc::new(mail::MailStore::open(paths.mail_dir())),
+        web_notes: std::sync::Mutex::default(),
         dumps: Arc::new(dumps::Dumps::new(&paths.data_dir, state.capture_dumps)),
         events,
         tls: authority,
@@ -335,8 +338,8 @@ pub async fn run(paths: Paths, shutdown: impl Future<Output = ()>) -> Result<(),
     let (https_listeners, http_listeners) = match from_helper {
         Some(listeners) => (adopt(listeners.https), adopt(listeners.http)),
         None => (
-            bind_web(https_port, FALLBACK_HTTPS_PORT, "HTTPS").await,
-            bind_web(http_port, FALLBACK_HTTP_PORT, "HTTP").await,
+            bind_web(&app, https_port, FALLBACK_HTTPS_PORT, "HTTPS").await,
+            bind_web(&app, http_port, FALLBACK_HTTP_PORT, "HTTP").await,
         ),
     };
 
@@ -440,30 +443,51 @@ fn renew_certificates(app: &AppState) {
 }
 
 /// Bind a web listener, falling back to an unprivileged port when the
-/// configured one needs root and no helper is available yet.
+/// configured one needs root (and no helper is installed) or is already
+/// used by another program.
 async fn bind_web(
+    app: &AppState,
     port: u16,
     fallback: u16,
     what: &str,
 ) -> Option<(Vec<tokio::net::TcpListener>, u16)> {
-    match web::bind(port).await {
-        Ok(bound) => Some(bound),
+    let reason = match web::bind(port).await {
+        Ok(bound) => return Some(bound),
         Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied && port < 1024 => {
-            tracing::warn!(
-                port,
-                fallback,
-                "cannot bind a privileged {what} port without the helper; using the fallback port"
+            format!("port {port} needs the privileged helper")
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::AddrInUse && port != fallback => {
+            let note = format!(
+                "port {port} is used by another program (another web server such as Herd, Valet, nginx or Apache?)"
             );
-            match web::bind(fallback).await {
-                Ok(bound) => Some(bound),
-                Err(err) => {
-                    tracing::error!(%err, port = fallback, "{what} server disabled");
-                    None
-                }
-            }
+            app.web_notes
+                .lock()
+                .expect("web notes poisoned")
+                .push(note.clone());
+            note
         }
         Err(err) => {
             tracing::error!(%err, port, "{what} server disabled");
+            app.web_notes
+                .lock()
+                .expect("web notes poisoned")
+                .push(format!("{what} on port {port}: {err}"));
+            return None;
+        }
+    };
+    tracing::warn!(
+        port,
+        fallback,
+        "{reason}; using the fallback port for {what}"
+    );
+    match web::bind(fallback).await {
+        Ok(bound) => Some(bound),
+        Err(err) => {
+            tracing::error!(%err, port = fallback, "{what} server disabled");
+            app.web_notes
+                .lock()
+                .expect("web notes poisoned")
+                .push(format!("{what} fallback port {fallback}: {err}"));
             None
         }
     }

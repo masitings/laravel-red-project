@@ -84,6 +84,14 @@ fn php(app: &AppState) -> Check {
 }
 
 fn web_ports(app: &AppState) -> Check {
+    let notes = app.web_notes.lock().expect("web notes poisoned").join("; ");
+    let with_notes = |text: String| {
+        if notes.is_empty() {
+            text
+        } else {
+            format!("{text} ({notes})")
+        }
+    };
     match (app.http_port.get(), app.https_port.get()) {
         (Some(80), Some(443)) => check(
             "ports",
@@ -96,15 +104,19 @@ fn web_ports(app: &AppState) -> Check {
             "ports",
             "Web ports",
             CheckStatus::Warn,
-            format!("serving on {http} and {https}; URLs need the port"),
-            Some("red helper:install"),
+            with_notes(format!("serving on {http} and {https}; URLs need the port")),
+            Some(if notes.contains("another program") {
+                "stop the other web server, then `red restart`"
+            } else {
+                "red helper:install"
+            }),
         ),
         _ => check(
             "ports",
             "Web ports",
             CheckStatus::Fail,
-            "the web server is not running; see the redd log",
-            None,
+            with_notes("the web server is not running".into()),
+            Some("see ~/Library/Logs/RED/redd.log, then `red restart`"),
         ),
     }
 }
@@ -148,13 +160,32 @@ fn resolver_file(app: &AppState) -> Check {
             format!("{path} points at RED"),
             None,
         ),
-        (Ok(_), _) => check(
-            "resolver",
-            "Resolver",
-            CheckStatus::Fail,
-            format!("{path} does not point at RED's DNS port"),
-            Some("red dns:install"),
-        ),
+        (Ok(text), _) => {
+            let ours = text.contains("Added by RED Project");
+            let points_at = text
+                .lines()
+                .filter(|l| l.starts_with("nameserver") || l.starts_with("port"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let detail = if ours {
+                format!("{path} points at an old DNS port ({points_at})")
+            } else {
+                format!(
+                    "{path} belongs to another tool ({points_at}); only one tool can own .{tld}"
+                )
+            };
+            check(
+                "resolver",
+                "Resolver",
+                CheckStatus::Fail,
+                detail,
+                Some(if ours {
+                    "red dns:install"
+                } else {
+                    "quit the other tool (e.g. Herd or Valet), then `red dns:install`"
+                }),
+            )
+        }
         (Err(_), _) => check(
             "resolver",
             "Resolver",
