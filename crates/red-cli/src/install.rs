@@ -161,10 +161,29 @@ pub fn install_agent(log_dir: &Path) -> anyhow::Result<()> {
             .args(["bootout", &format!("{domain}/{}", services::AGENT_LABEL)])
             .stderr(Stdio::null())
             .status();
-        run(
-            "launchctl",
-            &["bootstrap", &domain, &definition.display().to_string()],
-        )?;
+        // `bootout` finishes asynchronously; bootstrapping right away can
+        // fail with "Input/output error" until the old job is gone.
+        let definition_arg = definition.display().to_string();
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            let ok = Command::new("launchctl")
+                .args(["bootstrap", &domain, &definition_arg])
+                .stderr(if attempt < 5 {
+                    Stdio::null()
+                } else {
+                    Stdio::inherit()
+                })
+                .status()
+                .is_ok_and(|s| s.success());
+            if ok {
+                break;
+            }
+            if attempt >= 5 {
+                bail!("launchctl could not load {definition_arg}");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
         println!("redd starts at login now (log: {}).", log.display());
     } else {
         std::fs::write(&definition, services::agent_unit(&redd))?;
@@ -174,6 +193,34 @@ pub fn install_agent(log_dir: &Path) -> anyhow::Result<()> {
         println!("redd starts at login now (journalctl --user -u redd for logs).");
     }
     Ok(())
+}
+
+/// Restart redd through the login agent, installing the agent if needed.
+pub fn restart_agent(log_dir: &Path) -> anyhow::Result<()> {
+    if cfg!(target_os = "macos") {
+        let uid = red_platform::user::current_uid();
+        let job = format!("gui/{uid}/{}", services::AGENT_LABEL);
+        let restarted = Command::new("launchctl")
+            .args(["kickstart", "-k", &job])
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success());
+        if restarted {
+            println!("Restarted redd.");
+            return Ok(());
+        }
+    } else {
+        let restarted = Command::new("systemctl")
+            .args(["--user", "restart", "redd.service"])
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success());
+        if restarted {
+            println!("Restarted redd.");
+            return Ok(());
+        }
+    }
+    install_agent(log_dir)
 }
 
 /// Stop starting redd at login, and stop it.

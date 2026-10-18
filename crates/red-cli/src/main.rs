@@ -104,6 +104,8 @@ enum Command {
     /// Stop starting redd at login, and stop it.
     #[command(name = "service:uninstall")]
     ServiceUninstall,
+    /// (Re)start redd, e.g. after installing a new version.
+    Restart,
     /// Check that everything RED needs is in place.
     Doctor,
     /// One-time setup: helper, autostart, DNS and CA trust.
@@ -594,6 +596,12 @@ async fn run(cli: &Cli) -> anyhow::Result<()> {
             ctx.wait_for_daemon().await?;
         }
         Command::ServiceUninstall => install::uninstall_agent()?,
+        Command::Restart => {
+            install::restart_agent(&paths.log_dir)?;
+            ctx.wait_for_daemon().await?;
+            let status = ctx.client.status().await?;
+            println!("redd {} is running (pid {}).", status.version, status.pid);
+        }
         Command::Doctor => {
             let report: DoctorReport = ctx.client.get(endpoints::DOCTOR).await?;
             ctx.output(&report, print_doctor)?;
@@ -863,7 +871,10 @@ fn uptime(secs: u64) -> String {
 
 fn report(cli: &Cli, err: &anyhow::Error) {
     let hint = match err.downcast_ref::<ClientError>() {
-        Some(ClientError::DaemonNotRunning { .. }) => Some("start it with `redd`".to_owned()),
+        Some(ClientError::DaemonNotRunning { .. }) => Some(
+            "start it with `red restart` (or run `redd` in a terminal); see `red setup` for a first install"
+                .to_owned(),
+        ),
         Some(ClientError::Api { error, .. }) => error.hint.clone(),
         _ => None,
     };

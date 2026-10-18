@@ -53,4 +53,7 @@ install prefix=(env_var("HOME") + "/.local"):
     cargo build --release -p red-cli -p red-daemon -p red-helper
     mkdir -p {{prefix}}/bin
     install -m 0755 target/release/red target/release/redd target/release/red-helper {{prefix}}/bin/
-    @echo "Installed to {{prefix}}/bin. Run 'red setup' next."
+    @echo "Installed to {{prefix}}/bin."
+    @# Restart a running redd so the new version takes over (ignored before `red setup`).
+    -@test -f "$HOME/Library/LaunchAgents/dev.redproject.redd.plist" -o -f "$HOME/.config/systemd/user/redd.service" && {{prefix}}/bin/red restart
+    @echo "First install? Run 'red setup' next."

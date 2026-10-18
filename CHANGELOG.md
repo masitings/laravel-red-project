@@ -52,6 +52,10 @@ Developer tools: databases, mail, dumps, logs and per-project settings.
 - Releases include `RED-<version>-macos-<arch>.dmg` with `red`, `redd` and
   `red-helper` inside the app (`just bundle` builds it locally).
 
+### System integration
+- `red restart` restarts redd through its login agent (installing the agent
+  if needed); `just install` uses it so a new build takes over right away.
+
 ### Known limitations
 - The app is ad-hoc signed, not notarized: the first time, open it from
   System Settings → Privacy & Security → "Open Anyway".
