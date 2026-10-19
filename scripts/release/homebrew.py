@@ -46,6 +46,9 @@ class Red < Formula
   end
 
   on_linux do
+    on_arm do
+{block("aarch64-unknown-linux-gnu")}
+    end
     on_intel do
 {block("x86_64-unknown-linux-gnu")}
     end

@@ -53,6 +53,26 @@ in system directories, and trusting the CA changes your keychain. Each
 step can also be run on its own (`red helper:install`, `red service:install`,
 `red dns:install`, `red trust`).
 
+### Linux
+
+Download `RED-<version>-linux-<arch>.deb` (installs the app and puts `red`,
+`redd` and `red-helper` in `/usr/bin`), the x86_64 AppImage, or the
+command-line archive, then run `red setup` as above. On Linux:
+
+- the helper runs as a systemd service and redd as a systemd user service
+  (`journalctl --user -u redd` for its log);
+- `.test` DNS needs systemd-resolved 246 or newer (Ubuntu 22.04+, Debian 12+,
+  Fedora); RED adds a drop-in in `/etc/systemd/resolved.conf.d`. Without
+  systemd-resolved, point `.test` at redd yourself, e.g. dnsmasq's
+  `server=/test/127.0.0.1#53530`;
+- `red trust` adds the CA to the system store (`update-ca-certificates` or
+  `trust anchor`) and to Chrome's and Firefox's certificate databases, which
+  needs `certutil` (`libnss3-tools` on Debian/Ubuntu, `nss-tools` on
+  Fedora);
+- MySQL needs libaio (`sudo apt install libaio1t64` on Ubuntu 24.04).
+
+`red doctor` checks each of these.
+
 ## Usage
 
 ```sh
@@ -222,7 +242,7 @@ Where RED keeps its files:
 | M0 Foundation ✓ | Workspace, CI, Control API, GUI shell | Green build on macOS + Linux |
 | M1 MVP ✓ | Park/link, `.test` DNS, local HTTPS, multiple PHP versions, proxies with WebSocket, GUI for sites and PHP | v0.1.0 |
 | M2 Dev tools ✓ | MySQL/PostgreSQL/Valkey, mail catcher, dumps, log viewer, `red.toml`, Node per site, desktop app bundle | v0.2.0 |
-| M3 Distribution | Downloadable runtimes ✓, runtime and app updates ✓, signing/notarization and Homebrew tap in CI ✓, Linux | Signed releases on both OSes |
+| M3 Distribution | Downloadable runtimes ✓, runtime and app updates ✓, signing/notarization and Homebrew tap in CI ✓, Linux DNS/trust/packages ✓ | Signed releases on both OSes |
 | M4 Advanced | On-demand Xdebug, sharing/tunnels, profiler, MCP server, git workspaces | v1.0.0 |
 
 ## Contributing

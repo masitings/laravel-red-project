@@ -8,6 +8,7 @@ pub mod paths;
 pub mod php;
 pub mod process;
 pub mod services;
+pub mod trust;
 pub mod user;
 
 pub use paths::Paths;

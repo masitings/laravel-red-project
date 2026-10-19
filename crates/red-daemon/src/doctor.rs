@@ -176,13 +176,17 @@ fn dns_responder(app: &AppState) -> Check {
 fn resolver_file(app: &AppState) -> Check {
     let tld = &app.config.tld;
     if !cfg!(target_os = "macos") {
-        return check(
-            "resolver",
-            "Resolver",
-            CheckStatus::Warn,
-            "not checked on this OS",
-            None,
-        );
+        let path = red_helper::resolver::path_for(&red_helper::resolver::default_dir(), tld);
+        let (status, detail, fix) = linux_resolver(&LinuxResolver {
+            path: &path.display().to_string(),
+            drop_in: std::fs::read_to_string(&path).ok().as_deref(),
+            dns_port: app.dns_port.get().copied(),
+            resolved_running: red_platform::trust::systemd_resolved_running(),
+            resolv_conf: std::fs::read_to_string("/etc/resolv.conf").ok().as_deref(),
+            systemd_version: systemd_version(),
+            tld,
+        });
+        return check("resolver", "Resolver", status, detail, fix);
     }
     let path = format!("/etc/resolver/{tld}");
     match (std::fs::read_to_string(&path), app.dns_port.get()) {
@@ -229,6 +233,101 @@ fn resolver_file(app: &AppState) -> Check {
     }
 }
 
+/// What the Linux resolver check looks at.
+struct LinuxResolver<'a> {
+    path: &'a str,
+    drop_in: Option<&'a str>,
+    dns_port: Option<u16>,
+    resolved_running: bool,
+    resolv_conf: Option<&'a str>,
+    systemd_version: Option<u32>,
+    tld: &'a str,
+}
+
+/// systemd-resolved accepts `DNS=127.0.0.1:<port>` from this version on.
+const RESOLVED_PORT_SYNTAX: u32 = 246;
+
+fn linux_resolver(r: &LinuxResolver<'_>) -> (CheckStatus, String, Option<&'static str>) {
+    if !r.resolved_running {
+        let port = r.dns_port.map_or("<port>".to_owned(), |p| p.to_string());
+        return (
+            CheckStatus::Warn,
+            format!(
+                "systemd-resolved is not running; send .{} to 127.0.0.1#{port} in your DNS setup (dnsmasq: server=/{}/127.0.0.1#{port})",
+                r.tld, r.tld
+            ),
+            None,
+        );
+    }
+    if let Some(version) = r.systemd_version
+        && version < RESOLVED_PORT_SYNTAX
+    {
+        return (
+            CheckStatus::Fail,
+            format!(
+                "systemd {version} only sends DNS to port 53 (other ports need {RESOLVED_PORT_SYNTAX}+); use dnsmasq instead: server=/{}/127.0.0.1#{}",
+                r.tld,
+                r.dns_port.map_or("<port>".to_owned(), |p| p.to_string())
+            ),
+            None,
+        );
+    }
+    let stub = r.resolv_conf.is_none_or(|text| {
+        text.lines()
+            .any(|l| l.trim_start().starts_with("nameserver 127.0.0.53"))
+    });
+    match (r.drop_in, r.dns_port) {
+        (Some(text), Some(port)) if text.contains(&format!("DNS=127.0.0.1:{port}")) => {
+            if stub {
+                (CheckStatus::Ok, format!("{} points at RED", r.path), None)
+            } else {
+                (
+                    CheckStatus::Warn,
+                    format!(
+                        "{} points at RED, but /etc/resolv.conf does not use systemd-resolved (127.0.0.53), so some programs bypass it",
+                        r.path
+                    ),
+                    Some("sudo ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf"),
+                )
+            }
+        }
+        (Some(text), _) if text.starts_with(red_helper::resolver::MARKER) => (
+            CheckStatus::Fail,
+            format!("{} points at an old DNS port", r.path),
+            Some("red dns:install"),
+        ),
+        (Some(_), _) => (
+            CheckStatus::Fail,
+            format!("{} belongs to another tool", r.path),
+            Some("remove it, then `red dns:install`"),
+        ),
+        (None, _) => (
+            CheckStatus::Fail,
+            format!("{} is missing", r.path),
+            Some("red dns:install"),
+        ),
+    }
+}
+
+/// Major version of systemd, from `systemctl --version` ("systemd 255 (...)").
+fn systemd_version() -> Option<u32> {
+    let output = std::process::Command::new("systemctl")
+        .arg("--version")
+        .output()
+        .ok()?;
+    parse_systemd_version(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn parse_systemd_version(text: &str) -> Option<u32> {
+    text.lines()
+        .next()?
+        .strip_prefix("systemd ")?
+        .split(|c: char| !c.is_ascii_digit())
+        .next()?
+        .parse()
+        .ok()
+}
+
 async fn resolution(app: &AppState) -> Check {
     let host = format!("red-doctor.{}:80", app.config.tld);
     let lookup = host.clone();
@@ -266,13 +365,16 @@ async fn resolution(app: &AppState) -> Check {
 async fn ca_trust(app: &AppState) -> Check {
     let ca = app.tls.ca_cert_path();
     if !cfg!(target_os = "macos") {
-        return check(
-            "ca",
-            "Local CA",
-            CheckStatus::Warn,
-            format!("trust is not checked on this OS; CA at {}", ca.display()),
-            Some("red trust"),
-        );
+        let pem = std::fs::read_to_string(&ca).unwrap_or_default();
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        let (status, detail, fix) = tokio::task::spawn_blocking(move || {
+            let system = system_trusts(&pem);
+            let browsers = home.map(|home| browser_trust(&home)).unwrap_or_default();
+            linux_ca(system, &browsers)
+        })
+        .await
+        .unwrap_or((CheckStatus::Warn, "could not check".into(), None));
+        return check("ca", "Local CA", status, detail, fix);
     }
     let status = tokio::process::Command::new("security")
         .args(["verify-cert", "-c"])
@@ -292,6 +394,100 @@ async fn ca_trust(app: &AppState) -> Check {
             "not trusted; browsers will warn on HTTPS sites",
             Some("red trust"),
         ),
+    }
+}
+
+/// Whether the system trust store (what curl, PHP and Rust programs read)
+/// contains the CA in `pem`; `None` when the store could not be read.
+fn system_trusts(pem: &str) -> Option<bool> {
+    use base64::Engine;
+    let body: String = pem.lines().filter(|l| !l.starts_with("-----")).collect();
+    let der = base64::engine::general_purpose::STANDARD
+        .decode(body.trim())
+        .ok()?;
+    let loaded = rustls_native_certs::load_native_certs();
+    if loaded.certs.is_empty() {
+        return None;
+    }
+    Some(
+        loaded
+            .certs
+            .iter()
+            .any(|cert| cert.as_ref() == der.as_slice()),
+    )
+}
+
+/// Trust in each browser NSS database that exists: `Some(trusted)`, or
+/// `None` when `certutil` is not installed to look.
+fn browser_trust(home: &std::path::Path) -> Vec<(String, Option<bool>)> {
+    let certutil = !red_platform::binaries::in_path("certutil").is_empty();
+    red_platform::trust::nss_databases(home)
+        .into_iter()
+        .filter(|db| db.join("cert9.db").is_file())
+        .map(|db| {
+            let trusted = certutil.then(|| {
+                std::process::Command::new("certutil")
+                    .arg("-d")
+                    .arg(format!("sql:{}", db.display()))
+                    .args(["-L", "-n", red_platform::trust::NSS_NICKNAME])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .is_ok_and(|s| s.success())
+            });
+            (db.display().to_string(), trusted)
+        })
+        .collect()
+}
+
+fn linux_ca(
+    system: Option<bool>,
+    browsers: &[(String, Option<bool>)],
+) -> (CheckStatus, String, Option<&'static str>) {
+    match system {
+        Some(false) => {
+            return (
+                CheckStatus::Fail,
+                "not trusted by the system; HTTPS sites fail in curl, PHP and browsers".into(),
+                Some("red trust"),
+            );
+        }
+        None => {
+            return (
+                CheckStatus::Warn,
+                "could not read the system trust store".into(),
+                Some("red trust"),
+            );
+        }
+        Some(true) => {}
+    }
+    if browsers.iter().any(|(_, trusted)| trusted.is_none()) {
+        return (
+            CheckStatus::Warn,
+            "trusted by the system; browsers not checked (certutil is not installed)".into(),
+            Some("install libnss3-tools (or nss-tools), then `red trust`"),
+        );
+    }
+    let missing: Vec<&str> = browsers
+        .iter()
+        .filter(|(_, trusted)| *trusted == Some(false))
+        .map(|(db, _)| db.as_str())
+        .collect();
+    if missing.is_empty() {
+        (
+            CheckStatus::Ok,
+            "trusted by the system and browsers".into(),
+            None,
+        )
+    } else {
+        (
+            CheckStatus::Warn,
+            format!(
+                "trusted by the system, not by browsers using {}",
+                missing.join(", ")
+            ),
+            Some("red trust"),
+        )
     }
 }
 
@@ -351,5 +547,91 @@ fn autostart() -> Check {
             "redd must be started by hand",
             Some("red service:install"),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn resolver<'a>(drop_in: Option<&'a str>, resolv_conf: Option<&'a str>) -> LinuxResolver<'a> {
+        LinuxResolver {
+            path: "/etc/systemd/resolved.conf.d/red-test.conf",
+            drop_in,
+            dns_port: Some(53530),
+            resolved_running: true,
+            resolv_conf,
+            systemd_version: Some(255),
+            tld: "test",
+        }
+    }
+
+    #[test]
+    fn checks_the_linux_resolver() {
+        let ours = red_helper::resolver::contents("test", 53530);
+        let stub = "nameserver 127.0.0.53\noptions edns0\n";
+        assert_eq!(
+            linux_resolver(&resolver(Some(&ours), Some(stub))).0,
+            CheckStatus::Ok
+        );
+        // resolv.conf bypasses systemd-resolved.
+        let (status, _, fix) = linux_resolver(&resolver(Some(&ours), Some("nameserver 1.1.1.1\n")));
+        assert_eq!(status, CheckStatus::Warn);
+        assert!(fix.unwrap().contains("stub-resolv.conf"));
+        // Old port.
+        let old = red_helper::resolver::contents("test", 5353);
+        assert_eq!(
+            linux_resolver(&resolver(Some(&old), Some(stub))).0,
+            CheckStatus::Fail
+        );
+        // Missing.
+        let (status, detail, _) = linux_resolver(&resolver(None, Some(stub)));
+        assert_eq!(status, CheckStatus::Fail);
+        assert!(detail.contains("missing"));
+        // Too old for DNS=address:port.
+        let mut old_systemd = resolver(Some(&ours), Some(stub));
+        old_systemd.systemd_version = Some(245);
+        assert_eq!(linux_resolver(&old_systemd).0, CheckStatus::Fail);
+        // No systemd-resolved: only advice.
+        let mut none = resolver(None, None);
+        none.resolved_running = false;
+        let (status, detail, _) = linux_resolver(&none);
+        assert_eq!(status, CheckStatus::Warn);
+        assert!(detail.contains("server=/test/127.0.0.1#53530"));
+    }
+
+    #[test]
+    fn parses_systemd_versions() {
+        assert_eq!(
+            parse_systemd_version("systemd 255 (255.4-1ubuntu8)\n+PAM"),
+            Some(255)
+        );
+        assert_eq!(parse_systemd_version("systemd 249\n"), Some(249));
+        assert_eq!(parse_systemd_version("nope"), None);
+    }
+
+    #[test]
+    fn checks_linux_ca_trust() {
+        assert_eq!(linux_ca(Some(false), &[]).0, CheckStatus::Fail);
+        assert_eq!(linux_ca(None, &[]).0, CheckStatus::Warn);
+        assert_eq!(linux_ca(Some(true), &[]).0, CheckStatus::Ok);
+        let chrome = "/home/me/.pki/nssdb".to_owned();
+        assert_eq!(
+            linux_ca(Some(true), &[(chrome.clone(), Some(true))]).0,
+            CheckStatus::Ok
+        );
+        let (status, detail, _) = linux_ca(Some(true), &[(chrome.clone(), Some(false))]);
+        assert_eq!(status, CheckStatus::Warn);
+        assert!(detail.contains(".pki/nssdb"));
+        let (_, _, fix) = linux_ca(Some(true), &[(chrome, None)]);
+        assert!(fix.unwrap().contains("libnss3-tools"));
+    }
+
+    #[test]
+    fn finds_a_ca_in_the_system_store() {
+        // A PEM that is surely not in the store, and garbage.
+        let pem = "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n";
+        assert_ne!(system_trusts(pem), Some(true));
+        assert_eq!(system_trusts("not base64 !!"), None);
     }
 }

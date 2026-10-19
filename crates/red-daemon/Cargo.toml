@@ -35,6 +35,8 @@ zip.workspace = true
 lzma-rust2.workspace = true
 sha2.workspace = true
 rustls-platform-verifier.workspace = true
+# The doctor checks the system trust store for RED's CA (Linux).
+rustls-native-certs = "0.8"
 rustls.workspace = true
 tokio-rustls.workspace = true
 rustls-pki-types.workspace = true

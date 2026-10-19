@@ -15,6 +15,7 @@ path = "src/main.rs"
 red-api = { workspace = true, features = ["client"] }
 red-platform.workspace = true
 red-core.workspace = true
+red-helper.workspace = true
 
 tokio.workspace = true
 clap.workspace = true

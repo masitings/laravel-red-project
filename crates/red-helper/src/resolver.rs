@@ -14,7 +14,8 @@ pub fn default_dir() -> PathBuf {
     }
 }
 
-fn file_for(dir: &Path, tld: &str) -> PathBuf {
+/// The resolver file for `tld` inside `dir`.
+pub fn path_for(dir: &Path, tld: &str) -> PathBuf {
     if cfg!(target_os = "macos") {
         dir.join(tld)
     } else {
@@ -36,7 +37,7 @@ pub fn contents(tld: &str, port: u16) -> String {
 /// Write the resolver file for `tld`. The caller has validated both values.
 pub fn install(dir: &Path, tld: &str, port: u16) -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(dir)?;
-    let path = file_for(dir, tld);
+    let path = path_for(dir, tld);
     std::fs::write(&path, contents(tld, port))?;
     Ok(path)
 }
@@ -44,7 +45,7 @@ pub fn install(dir: &Path, tld: &str, port: u16) -> std::io::Result<PathBuf> {
 /// Remove the resolver file for `tld` if RED wrote it. Returns whether a
 /// file was removed.
 pub fn remove(dir: &Path, tld: &str) -> std::io::Result<bool> {
-    let path = file_for(dir, tld);
+    let path = path_for(dir, tld);
     match std::fs::read_to_string(&path) {
         Ok(text) if text.starts_with(MARKER) => {
             std::fs::remove_file(&path)?;

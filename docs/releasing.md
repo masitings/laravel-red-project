@@ -4,9 +4,11 @@ A release is a `v*` tag. Pushing one runs `.github/workflows/release.yml`,
 which builds:
 
 - `red-<tag>-<target>.tar.gz`: `red`, `redd` and `red-helper` for macOS
-  (Apple Silicon, Intel) and Linux x86_64;
+  (Apple Silicon, Intel) and Linux (x86_64, arm64);
 - `RED-<tag>-macos-<arch>.dmg`: the desktop app, with the three binaries
   inside;
+- `RED-<tag>-linux-<arch>.deb` (x86_64, arm64) and
+  `RED-<tag>-linux-x86_64.AppImage`: the desktop app for Linux;
 
 and publishes them, with SHA-256 files and the CHANGELOG section for the
 version, on a GitHub release.
@@ -56,7 +58,8 @@ app is stapled; bare executables are checked online by Gatekeeper).
 ### App auto-update
 
 The app checks `releases/latest/download/latest.json` every six hours and
-installs signed update archives. Updates are signed with a key of their own
+installs signed update archives (the macOS app, the Linux AppImage, and the
+`.deb` when Tauri signed one). Updates are signed with a key of their own
 (not the Apple certificate). Create it once:
 
 ```sh

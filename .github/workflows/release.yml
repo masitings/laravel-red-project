@@ -33,8 +33,11 @@ jobs:
             target: aarch64-apple-darwin
           - os: macos-15
             target: x86_64-apple-darwin
-          - os: ubuntu-24.04
+          # Ubuntu 22.04 (glibc 2.35), so the binaries run on older distributions too.
+          - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -81,8 +84,20 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [aarch64-apple-darwin, x86_64-apple-darwin]
-    runs-on: macos-15
+        include:
+          - os: macos-15
+            target: aarch64-apple-darwin
+            bundles: app,dmg
+          - os: macos-15
+            target: x86_64-apple-darwin
+            bundles: app,dmg
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            bundles: deb,appimage
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            bundles: deb
+    runs-on: ${{ matrix.os }}
     env:
       HAS_UPDATER_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
     steps:
@@ -104,7 +119,13 @@ jobs:
           cache-dependency-path: apps/gui/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
         working-directory: apps/gui
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf file
       - name: Signing certificate
+        if: runner.os == 'macOS'
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -138,7 +159,7 @@ jobs:
           fi
           echo "$config" > "$RUNNER_TEMP/release.conf.json"
           cat "$RUNNER_TEMP/release.conf.json"
-      - name: Build RED.app and the disk image
+      - name: Build the app bundles
         working-directory: apps/gui
         env:
           SIGNING_KEY_SECRET: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -157,22 +178,39 @@ jobs:
              && [ -n "$APPLE_PASSWORD_SECRET" ] && [ -n "$APPLE_TEAM_ID_SECRET" ]; then
             export APPLE_ID="$APPLE_ID_SECRET" APPLE_PASSWORD="$APPLE_PASSWORD_SECRET" APPLE_TEAM_ID="$APPLE_TEAM_ID_SECRET"
           fi
-          pnpm tauri build --target ${{ matrix.target }} --bundles app,dmg --config "$RUNNER_TEMP/release.conf.json"
-      - name: Collect the disk image and the update archive
+          pnpm tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} --config "$RUNNER_TEMP/release.conf.json"
+      - name: Collect the packages and update archives
         shell: bash
         run: |
           mkdir -p dist
           arch="${{ matrix.target }}"; arch="${arch%%-*}"
           bundle="target/${{ matrix.target }}/release/bundle"
-          dmg=$(find "$bundle/dmg" -name "*.dmg" | head -1)
-          cp "$dmg" "dist/RED-${GITHUB_REF_NAME}-macos-$arch.dmg"
-          if [ "$HAS_UPDATER_KEY" = "true" ]; then
-            cp "$bundle/macos/RED.app.tar.gz" "dist/RED-${GITHUB_REF_NAME}-macos-$arch.app.tar.gz"
-            cp "$bundle/macos/RED.app.tar.gz.sig" "dist/RED-${GITHUB_REF_NAME}-macos-$arch.app.tar.gz.sig"
+          name="RED-${GITHUB_REF_NAME}"
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            dmg=$(find "$bundle/dmg" -name "*.dmg" | head -1)
+            cp "$dmg" "dist/$name-macos-$arch.dmg"
+            if [ "$HAS_UPDATER_KEY" = "true" ]; then
+              cp "$bundle/macos/RED.app.tar.gz" "dist/$name-macos-$arch.app.tar.gz"
+              cp "$bundle/macos/RED.app.tar.gz.sig" "dist/$name-macos-$arch.app.tar.gz.sig"
+            fi
+          else
+            deb=$(find "$bundle/deb" -name "*.deb" | head -1)
+            cp "$deb" "dist/$name-linux-$arch.deb"
+            if [ -f "$deb.sig" ]; then
+              cp "$deb.sig" "dist/$name-linux-$arch.deb.sig"
+            fi
+            appimage=$(find "$bundle/appimage" -name "*.AppImage" 2>/dev/null | head -1)
+            if [ -n "$appimage" ]; then
+              cp "$appimage" "dist/$name-linux-$arch.AppImage"
+              # The AppImage is its own update archive.
+              if [ -f "$appimage.sig" ]; then
+                cp "$appimage.sig" "dist/$name-linux-$arch.AppImage.sig"
+              fi
+            fi
           fi
           cd dist
-          for file in *.dmg *.app.tar.gz; do
-            [ -f "$file" ] && shasum -a 256 "$file" > "$file.sha256"
+          for file in *.dmg *.app.tar.gz *.deb *.AppImage; do
+            if [ -f "$file" ]; then shasum -a 256 "$file" > "$file.sha256"; fi
           done
           ls -l
       - uses: actions/upload-artifact@v4
@@ -198,7 +236,7 @@ jobs:
       - name: Update manifest for the desktop app
         run: |
           shopt -s nullglob
-          archives=(dist/*.app.tar.gz)
+          archives=(dist/*.app.tar.gz dist/*.AppImage.sig dist/*.deb.sig)
           if [ ${#archives[@]} -gt 0 ]; then
             python3 scripts/release/updater-manifest.py "$GITHUB_REF_NAME" notes.md \
               "https://github.com/${GITHUB_REPOSITORY}/releases/download/$GITHUB_REF_NAME" dist > dist/latest.json

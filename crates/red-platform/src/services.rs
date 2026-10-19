@@ -38,9 +38,9 @@ pub fn agent_definition(home: &Path) -> PathBuf {
     }
 }
 
-/// PATH given to redd (and through it to PHP), covering Homebrew on both
-/// Apple Silicon and Intel.
-pub const AGENT_PATH: &str = "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin";
+/// PATH given to redd (and through it to PHP), covering Homebrew on Apple
+/// Silicon, Intel and Linux.
+pub const AGENT_PATH: &str = "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin:/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin";
 
 fn xml_escape(text: &str) -> String {
     text.replace('&', "&amp;")
