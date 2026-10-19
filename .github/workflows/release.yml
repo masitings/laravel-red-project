@@ -199,7 +199,11 @@ jobs:
             if [ -f "$deb.sig" ]; then
               cp "$deb.sig" "dist/$name-linux-$arch.deb.sig"
             fi
-            appimage=$(find "$bundle/appimage" -name "*.AppImage" 2>/dev/null | head -1)
+            # arm64 builds no AppImage, so the directory may not exist.
+            appimage=""
+            if [ -d "$bundle/appimage" ]; then
+              appimage=$(find "$bundle/appimage" -name "*.AppImage" | head -1)
+            fi
             if [ -n "$appimage" ]; then
               cp "$appimage" "dist/$name-linux-$arch.AppImage"
               # The AppImage is its own update archive.
