@@ -193,6 +193,8 @@ const runtimes: RuntimesResponse = {
       version: "8.4.22",
       path: "/data/runtimes/php/8.4",
       installed: 1_760_000_000,
+      source: "github.com",
+      update: "8.4.23",
     },
   ],
   available: [
@@ -306,7 +308,19 @@ describe("App", () => {
     await waitFor(() =>
       expect(api).toHaveBeenCalledWith("POST", "/v1/runtimes", { kind: "php", version: "8.5" }),
     );
-    fireEvent.click(screen.getByText("Update"));
+    fireEvent.click(screen.getByText("Update to 8.4.23"));
+    await waitFor(() =>
+      expect(api).toHaveBeenCalledWith("POST", "/v1/runtimes", { kind: "php", version: "8.4" }),
+    );
+  });
+
+  it("lists runtime updates on the Status tab and updates them all", async () => {
+    mockDaemon();
+    renderApp();
+    expect(await screen.findByText("updates available", { exact: false })).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Status"));
+    expect(await screen.findByText("8.4.22 → 8.4.23")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Update all"));
     await waitFor(() =>
       expect(api).toHaveBeenCalledWith("POST", "/v1/runtimes", { kind: "php", version: "8.4" }),
     );

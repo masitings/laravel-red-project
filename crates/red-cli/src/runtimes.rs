@@ -5,7 +5,9 @@ use std::io::Write;
 
 use anyhow::{Context, bail};
 use red_api::client::Method;
-use red_api::{JobState, RuntimeJob, RuntimeKind, RuntimeRequest, RuntimesResponse, endpoints};
+use red_api::{
+    JobState, RuntimeInfo, RuntimeJob, RuntimeKind, RuntimeRequest, RuntimesResponse, endpoints,
+};
 
 use crate::{Ctx, print_table};
 
@@ -40,12 +42,22 @@ pub(crate) async fn list(ctx: &Ctx<'_>) -> anyhow::Result<()> {
         if r.installed.is_empty() {
             println!("No runtimes installed by RED yet.");
         } else {
-            let rows: Vec<[String; 3]> = r
+            let rows: Vec<[String; 4]> = r
                 .installed
                 .iter()
-                .map(|i| [kind_name(i.kind).into(), i.version.clone(), i.path.clone()])
+                .map(|i| {
+                    [
+                        kind_name(i.kind).into(),
+                        i.version.clone(),
+                        update_text(i),
+                        i.path.clone(),
+                    ]
+                })
                 .collect();
-            print_table(&["RUNTIME", "VERSION", "PATH"], &rows);
+            print_table(&["RUNTIME", "VERSION", "UPDATE", "PATH"], &rows);
+            if r.installed.iter().any(|i| i.update.is_some()) {
+                println!("Update with `red runtimes:update`.");
+            }
         }
         if !r.available.is_empty() {
             println!(
@@ -182,6 +194,68 @@ async fn install_with(
     })
 }
 
+/// What the UPDATE column says for an installed runtime.
+fn update_text(info: &RuntimeInfo) -> String {
+    match &info.update {
+        None => "-".into(),
+        Some(version) if *version == info.version => format!("{version} (RED build)"),
+        Some(version) => version.clone(),
+    }
+}
+
+/// Update installed runtimes that have an update, optionally only one kind
+/// or one line.
+pub(crate) async fn update(
+    ctx: &Ctx<'_>,
+    kind: Option<RuntimeKind>,
+    line: Option<&str>,
+) -> anyhow::Result<()> {
+    let response: RuntimesResponse = ctx.client.get(endpoints::RUNTIMES).await?;
+    let selected: Vec<&RuntimeInfo> = response
+        .installed
+        .iter()
+        .filter(|i| kind.is_none_or(|k| i.kind == k))
+        .filter(|i| line.is_none_or(|l| i.line == l))
+        .collect();
+    if selected.is_empty() {
+        match (kind, line) {
+            (Some(kind), Some(line)) => bail!("{} {line} is not installed by RED", kind_name(kind)),
+            (Some(kind), None) => bail!("no {} runtime is installed by RED", kind_name(kind)),
+            _ => bail!("no runtimes are installed by RED"),
+        }
+    }
+    for error in &response.catalog_errors {
+        eprintln!("warning: {error}");
+    }
+    let pending: Vec<&RuntimeInfo> = selected
+        .into_iter()
+        .filter(|i| i.update.is_some())
+        .collect();
+    let mut updated = Vec::new();
+    for info in &pending {
+        install_quietly(ctx, info.kind, &info.line).await?;
+        updated.push(serde_json::json!({
+            "runtime": kind_name(info.kind),
+            "line": info.line,
+            "from": info.version,
+            "to": info.update,
+        }));
+    }
+    ctx.output(&serde_json::json!({ "updated": updated }), |_| {
+        if pending.is_empty() {
+            println!("Everything is up to date.");
+        }
+        for info in &pending {
+            println!(
+                "Updated {} {} → {}.",
+                kind_name(info.kind),
+                info.version,
+                update_text(info)
+            );
+        }
+    })
+}
+
 pub(crate) async fn remove(ctx: &Ctx<'_>, kind: RuntimeKind, line: &str) -> anyhow::Result<()> {
     let _: serde_json::Value = ctx
         .send(
@@ -238,5 +312,20 @@ mod tests {
         assert!(parse_kind("postgresql").is_ok());
         assert!(matches!(parse_kind("redis"), Ok(RuntimeKind::Valkey)));
         assert!(parse_kind("mongo").is_err());
+
+        let mut info = RuntimeInfo {
+            kind: RuntimeKind::Php,
+            line: "8.4".into(),
+            version: "8.4.25".into(),
+            path: "/x".into(),
+            installed: 0,
+            source: None,
+            update: None,
+        };
+        assert_eq!(update_text(&info), "-");
+        info.update = Some("8.4.26".into());
+        assert_eq!(update_text(&info), "8.4.26");
+        info.update = Some("8.4.25".into());
+        assert_eq!(update_text(&info), "8.4.25 (RED build)");
     }
 }

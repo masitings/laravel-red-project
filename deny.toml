@@ -6,6 +6,16 @@ all-features = true
 [advisories]
 # Unmaintained crates pulled in by the Tauri/GTK stack are reported but not fatal.
 unmaintained = "workspace"
+ignore = [
+    # zip 4.x, pulled in by tauri-plugin-updater: the advisories concern
+    # `ZipArchive::extract` of untrusted archives. The updater only extracts
+    # zip files on Windows (RED ships for macOS and Linux) and only after
+    # the update's signature has been verified. Drop these once the updater
+    # moves to zip >= 9.
+    { id = "RUSTSEC-2026-0367", reason = "zip extraction is Windows-only in tauri-plugin-updater, after signature checks" },
+    { id = "RUSTSEC-2026-0368", reason = "zip extraction is Windows-only in tauri-plugin-updater, after signature checks" },
+    { id = "RUSTSEC-2026-0369", reason = "zip extraction is Windows-only in tauri-plugin-updater, after signature checks" },
+]
 
 [licenses]
 allow = [

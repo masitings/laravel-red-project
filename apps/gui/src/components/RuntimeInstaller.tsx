@@ -57,7 +57,10 @@ export function RuntimeInstaller({ kinds }: { kinds: RuntimeKind[] }) {
               j.line === release.line &&
               (j.state === "downloading" || j.state === "extracting"),
           );
-          const upToDate = installed?.version === release.version;
+          // The daemon says what to update to; RED's own PHP build of the
+          // same version counts too (it has more extensions).
+          const update = installed?.update ?? null;
+          const upToDate = installed !== undefined && update === null;
           return (
             <li
               key={`${release.kind}-${release.line}`}
@@ -100,7 +103,11 @@ export function RuntimeInstaller({ kinds }: { kinds: RuntimeKind[] }) {
                         actions.install.mutate({ kind: release.kind, version: release.line })
                       }
                     >
-                      {installed ? "Update" : "Install"}
+                      {!installed
+                        ? "Install"
+                        : update === installed.version
+                          ? "Switch to RED build"
+                          : `Update to ${update}`}
                     </Button>
                   )
                 )}

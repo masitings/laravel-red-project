@@ -39,6 +39,31 @@ All notable changes to RED Project. The format follows
 - The app's PHP page and Services page can install, update and remove
   runtimes.
 
+### Updates
+- Runtimes: `red runtimes` shows an UPDATE column and `red runtimes:update
+  [runtime] [line]` installs the newest build of each line. A PHP that came
+  from static-php-cli's fallback builds is offered RED's own build of the
+  same version (it has pdo_sqlite and pdo_pgsql). redd checks every six
+  hours and announces updates; set `runtimes_auto_update = true` in
+  `config.toml` to install patch updates automatically.
+- Updating a runtime that a service runs stops the service, swaps the build
+  (the old one is put back if that fails) and starts it again.
+- The app's Status page has an Updates card: runtime updates with "Update
+  all", the app's own updates, and a notice with a "Restart redd" button
+  when the running redd is older than the app. The Status tab shows how
+  many updates are waiting.
+- The desktop app updates itself (Tauri's updater, signed update archives
+  and `latest.json` on each release) when the release was built with an
+  update signing key; other builds say so and do not try.
+
+### Releases
+- The release workflow signs and notarizes the app, the disk image and the
+  command-line tools when Developer ID secrets are configured (ad-hoc
+  signing otherwise), builds the update archives and `latest.json` when an
+  updater key is configured, and updates a Homebrew tap (formula for the
+  command-line tools, cask for the app) when a tap token is configured.
+  See `docs/releasing.md`.
+
 ### Fixed
 - MySQL services accept `root` from 127.0.0.1 (MySQL's root account is
   `root@localhost`).

@@ -26,6 +26,10 @@ use crate::AppState;
 
 /// Catalogs are fetched again after this long.
 const CATALOG_TTL: Duration = Duration::from_secs(600);
+/// How often redd looks for runtime updates (the first check runs shortly
+/// after it starts).
+const UPDATE_CHECK_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
+const FIRST_UPDATE_CHECK: Duration = Duration::from_secs(120);
 /// Jobs kept in the list once finished.
 const KEEP_JOBS: usize = 20;
 /// Progress events are sent at most this often per job.
@@ -148,6 +152,8 @@ impl RuntimeManager {
                         version: marker.version,
                         path: dir.display().to_string(),
                         installed: marker.installed,
+                        source: marker.source,
+                        update: None,
                     });
                 }
             }
@@ -158,6 +164,25 @@ impl RuntimeManager {
                 .then_with(|| compare(&b.line, &a.line))
         });
         found
+    }
+
+    /// Fill in `update` for each runtime the catalogs have something newer
+    /// for (see [`runtimes::update_for`]).
+    pub async fn with_updates(&self, mut installed: Vec<RuntimeInfo>) -> Vec<RuntimeInfo> {
+        let red_host = self.manifest_url.as_deref().and_then(runtimes::url_host);
+        for info in &mut installed {
+            if let Ok(release) = self.resolve(core_kind(info.kind), &info.line).await
+                && release.line == info.line
+            {
+                info.update = runtimes::update_for(
+                    &info.version,
+                    info.source.as_deref(),
+                    &release,
+                    red_host.as_deref(),
+                );
+            }
+        }
+        installed
     }
 
     /// Recent jobs, newest first.
@@ -404,6 +429,46 @@ pub async fn install(
     Ok(job)
 }
 
+/// Look for runtime updates every few hours. New ones are announced with a
+/// `RuntimesChanged` event (the app shows them) and, with
+/// `runtimes_auto_update = true` in `config.toml`, installed right away.
+pub async fn watch_updates(app: Arc<AppState>, cancel: tokio_util::sync::CancellationToken) {
+    let mut known: Vec<(red_api::RuntimeKind, String, String)> = Vec::new();
+    let mut wait = FIRST_UPDATE_CHECK;
+    loop {
+        tokio::select! {
+            () = cancel.cancelled() => return,
+            () = tokio::time::sleep(wait) => {}
+        }
+        wait = UPDATE_CHECK_EVERY;
+        let installed = app.runtimes.installed();
+        if installed.is_empty() {
+            continue;
+        }
+        let updates: Vec<_> = app
+            .runtimes
+            .with_updates(installed)
+            .await
+            .into_iter()
+            .filter_map(|i| i.update.map(|version| (i.kind, i.line, version)))
+            .collect();
+        if updates != known {
+            for (kind, line, version) in &updates {
+                tracing::info!(kind = %core_kind(*kind), %line, %version, "runtime update available");
+            }
+            let _ = app.events.send(Event::RuntimesChanged);
+            known.clone_from(&updates);
+        }
+        if app.config.runtimes_auto_update {
+            for (kind, line, _) in &updates {
+                if let Err(err) = install(app.clone(), core_kind(*kind), line).await {
+                    tracing::warn!(kind = %core_kind(*kind), %line, %err, "automatic runtime update failed");
+                }
+            }
+        }
+    }
+}
+
 /// Let the rest of the daemon see the new runtime.
 async fn after_install(app: &AppState, release: &Release) {
     match release.kind {
@@ -472,24 +537,62 @@ async fn run(app: &AppState, id: u64, release: &Release) -> Result<(), String> {
         }
         finish(&staging, release)?;
         let dest = kind_dir.join(&release.line);
+        // An update: services running the old build are stopped while it is
+        // swapped and started again on the new one.
+        let mut stopped = Vec::new();
         if dest.exists() {
+            for (name, config) in app.state_snapshot().services {
+                if config.binary.starts_with(&dest)
+                    && app.services.runtime(&name).status != red_api::ServiceStatus::Stopped
+                {
+                    app.services.stop(&name).await;
+                    stopped.push((name, config));
+                }
+            }
             // Keep the user's php.ini across updates.
             let ini = dest.join("etc/php.ini");
             if ini.is_file() {
                 let _ = std::fs::copy(&ini, staging.join("etc/php.ini"));
             }
-            std::fs::remove_dir_all(&dest)
-                .map_err(|e| format!("cannot replace {}: {e}", dest.display()))?;
         }
-        std::fs::rename(&staging, &dest)
-            .map_err(|e| format!("cannot install into {}: {e}", dest.display()))?;
-        Ok(())
+        let swapped = swap_into_place(&staging, &dest);
+        for (name, config) in &stopped {
+            app.services.start(name, config).await;
+        }
+        swapped
     }
     .await;
     if result.is_err() {
         let _ = std::fs::remove_dir_all(&staging);
     }
     result
+}
+
+/// Replace `dest` with `staging`. The old directory is moved aside first
+/// and put back if the rename fails, so a failed update keeps the old build.
+fn swap_into_place(staging: &Path, dest: &Path) -> Result<(), String> {
+    let old = dest.with_file_name(format!(
+        ".old-{}",
+        dest.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("runtime")
+    ));
+    let _ = std::fs::remove_dir_all(&old);
+    let had_old = dest.exists();
+    if had_old {
+        std::fs::rename(dest, &old)
+            .map_err(|e| format!("cannot replace {}: {e}", dest.display()))?;
+    }
+    if let Err(err) = std::fs::rename(staging, dest) {
+        if had_old {
+            let _ = std::fs::rename(&old, dest);
+        }
+        return Err(format!("cannot install into {}: {err}", dest.display()));
+    }
+    if had_old {
+        let _ = std::fs::remove_dir_all(&old);
+    }
+    Ok(())
 }
 
 impl RuntimeManager {
@@ -754,6 +857,10 @@ fn write_marker(staging: &Path, release: &Release) -> Result<(), String> {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or_default(),
+        source: release
+            .artifacts
+            .first()
+            .and_then(|a| runtimes::url_host(&a.url)),
     };
     std::fs::write(
         staging.join(MARKER_FILE),

@@ -87,6 +87,15 @@ enum Command {
         #[arg(value_name = "VERSION")]
         line: Option<String>,
     },
+    /// Update runtimes installed by RED to the newest build of their line
+    /// (all of them, one kind, or one line).
+    #[command(name = "runtimes:update")]
+    RuntimesUpdate {
+        #[arg(value_name = "RUNTIME")]
+        kind: Option<String>,
+        #[arg(value_name = "VERSION")]
+        line: Option<String>,
+    },
     /// Remove a runtime installed by RED.
     #[command(name = "runtimes:remove")]
     RuntimesRemove {
@@ -697,6 +706,10 @@ async fn run(cli: &Cli) -> anyhow::Result<()> {
             )
             .await?
         }
+        Command::RuntimesUpdate { kind, line } => {
+            let kind = kind.as_deref().map(runtimes::parse_kind).transpose()?;
+            runtimes::update(&ctx, kind, line.as_deref()).await?
+        }
         Command::RuntimesRemove { kind, line } => {
             runtimes::remove(&ctx, runtimes::parse_kind(kind)?, line).await?
         }
@@ -987,6 +1000,8 @@ mod tests {
         assert!(Cli::try_parse_from(["red", "php:install"]).is_ok());
         assert!(Cli::try_parse_from(["red", "php:install", "8.3"]).is_ok());
         assert!(Cli::try_parse_from(["red", "runtimes:install", "postgres", "17"]).is_ok());
+        assert!(Cli::try_parse_from(["red", "runtimes:update"]).is_ok());
+        assert!(Cli::try_parse_from(["red", "runtimes:update", "php", "8.4"]).is_ok());
         assert!(Cli::try_parse_from(["red", "use", "8.4"]).is_ok());
         assert!(Cli::try_parse_from(["red", "--version"]).is_err()); // prints version
         assert!(Cli::try_parse_from(["red", "links"]).is_ok());

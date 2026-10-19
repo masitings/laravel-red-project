@@ -4,6 +4,7 @@ import { useState } from "react";
 import { RedApiError } from "./api/client";
 import { useDaemonEvents } from "./api/events";
 import { keys, useMail, useStatus } from "./api/queries";
+import { useUpdateCount } from "./components/Updates";
 import { Button, ErrorNote } from "./components/ui";
 import { DumpsView } from "./views/DumpsView";
 import { LogsView } from "./views/LogsView";
@@ -24,6 +25,7 @@ export function App() {
   useDaemonEvents();
   const mail = useMail();
   const unread = status.data ? (mail.data?.filter((m) => !m.read).length ?? 0) : 0;
+  const updates = useUpdateCount();
 
   return (
     <div className="flex min-h-screen bg-stone-50 text-stone-900 dark:bg-stone-950 dark:text-stone-100">
@@ -48,6 +50,12 @@ export function App() {
           >
             <span className="flex items-center justify-between">
               {name}
+              {name === "Status" && status.data && updates > 0 && (
+                <span className="rounded-full bg-amber-500 px-1.5 text-xs font-medium text-white">
+                  {updates}
+                  <span className="sr-only"> updates available</span>
+                </span>
+              )}
               {name === "Mail" && unread > 0 && (
                 <span className="rounded-full bg-red-600 px-1.5 text-xs font-medium text-white">
                   {unread}

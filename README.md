@@ -28,7 +28,14 @@ the PHP and Services pages in the app. `red setup` installs PHP when it
 finds none, and `red composer`/`red node` install themselves on first use.
 Homebrew installations work too, but are not needed.
 
-Download `RED-<version>-macos-<arch>.dmg` from the
+With Homebrew (once the tap is published):
+
+```sh
+brew install --cask masitings/red/red   # the app, with the red command
+brew install masitings/red/red          # or only the command-line tools
+```
+
+Or download `RED-<version>-macos-<arch>.dmg` from the
 [releases page](https://github.com/masitings/red-project/releases) and drag
 RED to Applications; the app contains the CLI too ("Install the red command"
 on its Status page links it into `~/.local/bin`). Or download the archive
@@ -146,6 +153,12 @@ static sites.
 | Node.js | nodejs.org (SHA-256 checked) |
 | Composer | getcomposer.org (SHA-256 checked) |
 
+`red runtimes` shows which installed runtimes have a newer build and
+`red runtimes:update` installs them (services using them restart on the new
+build); the app's Status page does the same. redd looks for updates every
+six hours; `runtimes_auto_update = true` in `config.toml` installs patch
+updates as soon as they appear.
+
 RED's builds are listed with their checksums in `manifest.json` on the
 [`runtimes` release](https://github.com/masitings/red-project/releases/tag/runtimes).
 Run the Runtimes workflow from the Actions tab to build them (it also runs
@@ -209,7 +222,7 @@ Where RED keeps its files:
 | M0 Foundation ✓ | Workspace, CI, Control API, GUI shell | Green build on macOS + Linux |
 | M1 MVP ✓ | Park/link, `.test` DNS, local HTTPS, multiple PHP versions, proxies with WebSocket, GUI for sites and PHP | v0.1.0 |
 | M2 Dev tools ✓ | MySQL/PostgreSQL/Valkey, mail catcher, dumps, log viewer, `red.toml`, Node per site, desktop app bundle | v0.2.0 |
-| M3 Distribution | Downloadable PHP/MySQL/PostgreSQL runtimes (done), Linux, signed and notarized releases | Signed releases on both OSes |
+| M3 Distribution | Downloadable runtimes ✓, runtime and app updates ✓, signing/notarization and Homebrew tap in CI ✓, Linux | Signed releases on both OSes |
 | M4 Advanced | On-demand Xdebug, sharing/tunnels, profiler, MCP server, git workspaces | v1.0.0 |
 
 ## Contributing

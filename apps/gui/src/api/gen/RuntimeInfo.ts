@@ -16,4 +16,14 @@ version: string, path: string,
 /**
  * Unix time of the installation.
  */
-installed: number, };
+installed: number, 
+/**
+ * Host it was downloaded from (`github.com` for RED's own builds).
+ */
+source: string | null, 
+/**
+ * Version to update to (`POST /v1/runtimes` with this line), when the
+ * catalog has a newer build for the line, or RED's own build of a PHP
+ * that came from a fallback source.
+ */
+update: string | null, };

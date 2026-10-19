@@ -110,7 +110,7 @@ fn php(app: &AppState) -> Check {
                 without_sqlite.join(", ")
             ),
             Some(
-                "red php:install <version> once RED's own builds are published, or use MySQL/PostgreSQL",
+                "red runtimes:update php (or red php:install <version>) for RED's own builds, which have it",
             ),
         )
     }

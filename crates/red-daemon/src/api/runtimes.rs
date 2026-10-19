@@ -22,7 +22,7 @@ async fn list(State(app): App) -> Json<RuntimesResponse> {
     let (available, catalog_errors) = app.runtimes.available().await;
     Json(RuntimesResponse {
         platform: app.runtimes.platform_name(),
-        installed: app.runtimes.installed(),
+        installed: app.runtimes.with_updates(app.runtimes.installed()).await,
         available,
         jobs: app.runtimes.jobs(),
         catalog_errors,

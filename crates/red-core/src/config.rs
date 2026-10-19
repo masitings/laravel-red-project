@@ -58,6 +58,10 @@ pub struct Config {
     /// URL of the runtime manifest listing RED's own PHP and Valkey builds.
     /// Defaults to RED Project's releases; an empty string turns it off.
     pub runtimes_manifest: Option<String>,
+    /// Install patch updates of RED's runtimes (PHP 8.4.25 → 8.4.26, ...)
+    /// in the background as soon as they are found. Off by default: RED
+    /// only reports them (`red runtimes`, the app) until you update.
+    pub runtimes_auto_update: bool,
 }
 
 impl Default for Config {
@@ -71,6 +75,7 @@ impl Default for Config {
             smtp_port: DEFAULT_SMTP_PORT,
             dump_port: DEFAULT_DUMP_PORT,
             runtimes_manifest: None,
+            runtimes_auto_update: false,
         }
     }
 }

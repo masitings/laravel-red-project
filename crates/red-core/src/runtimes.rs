@@ -714,6 +714,44 @@ pub struct Marker {
     pub version: String,
     /// Unix time of the installation.
     pub installed: u64,
+    /// Host the runtime was downloaded from (`github.com` for RED's own
+    /// builds, `dl.static-php.dev`, `nodejs.org`, ...). Missing in markers
+    /// written before RED recorded it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
+/// The host part of `url`: `https://nodejs.org/dist/x` → `nodejs.org`.
+pub fn url_host(url: &str) -> Option<String> {
+    let rest = url.split_once("://")?.1;
+    let host = rest.split(['/', '?', '#']).next()?;
+    let host = host.rsplit_once('@').map_or(host, |(_, h)| h);
+    let host = host.split(':').next()?;
+    (!host.is_empty()).then(|| host.to_ascii_lowercase())
+}
+
+/// The version to update an installed runtime to, if any: a newer patch on
+/// the same line, or, for PHP, RED's own build of the same version replacing
+/// a fallback build from elsewhere (RED's has more extensions).
+pub fn update_for(
+    installed_version: &str,
+    installed_source: Option<&str>,
+    release: &Release,
+    red_builds_host: Option<&str>,
+) -> Option<String> {
+    match compare(&release.version, installed_version) {
+        std::cmp::Ordering::Greater => Some(release.version.clone()),
+        std::cmp::Ordering::Equal => {
+            let release_source = release.artifacts.first().and_then(|a| url_host(&a.url));
+            let is_red_build =
+                red_builds_host.is_some() && release_source.as_deref() == red_builds_host;
+            (release.kind == RuntimeKind::Php
+                && is_red_build
+                && installed_source != release_source.as_deref())
+            .then(|| release.version.clone())
+        }
+        std::cmp::Ordering::Less => None,
+    }
 }
 
 #[cfg(test)]
@@ -932,5 +970,75 @@ mod tests {
         assert!(version_matches("8.4.23", ""));
         assert!(!version_matches("8.4.23", "8.40"));
         assert!(version_matches("18.6.0", "18"));
+    }
+
+    #[test]
+    fn finds_updates() {
+        assert_eq!(
+            url_host("https://nodejs.org/dist/v22/x.tar.gz").as_deref(),
+            Some("nodejs.org")
+        );
+        assert_eq!(
+            url_host("https://u@Example.COM:8443/a").as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(url_host("not a url"), None);
+
+        let release = |version: &str, url: &str| Release {
+            kind: RuntimeKind::Php,
+            line: "8.4".into(),
+            version: version.into(),
+            artifacts: vec![Artifact {
+                url: url.into(),
+                sha256: None,
+                sha256_url: None,
+                sha256_name: None,
+                format: Format::TarGz,
+                layout: Layout::Flat,
+            }],
+        };
+        let red = "https://github.com/masitings/red-project/releases/download/runtimes/php.tar.gz";
+        let spc = "https://dl.static-php.dev/static-php-cli/bulk/php.tar.gz";
+        let host = Some("github.com");
+        // Newer patch.
+        assert_eq!(
+            update_for("8.4.25", Some("github.com"), &release("8.4.26", red), host).as_deref(),
+            Some("8.4.26")
+        );
+        // Same version, already RED's build.
+        assert_eq!(
+            update_for("8.4.26", Some("github.com"), &release("8.4.26", red), host),
+            None
+        );
+        // Same version, but a fallback build: switch to RED's.
+        assert_eq!(
+            update_for(
+                "8.4.26",
+                Some("dl.static-php.dev"),
+                &release("8.4.26", red),
+                host
+            )
+            .as_deref(),
+            Some("8.4.26")
+        );
+        assert_eq!(
+            update_for("8.4.26", None, &release("8.4.26", red), host).as_deref(),
+            Some("8.4.26")
+        );
+        // Only a fallback build is available: nothing to switch to.
+        assert_eq!(
+            update_for("8.4.26", None, &release("8.4.26", spc), host),
+            None
+        );
+        // Older than installed.
+        assert_eq!(
+            update_for("8.4.27", None, &release("8.4.26", red), host),
+            None
+        );
+        // RED builds turned off.
+        assert_eq!(
+            update_for("8.4.26", None, &release("8.4.26", red), None),
+            None
+        );
     }
 }

@@ -277,6 +277,10 @@ pub async fn run(paths: Paths, shutdown: impl Future<Output = ()>) -> Result<(),
 
     let cancel = CancellationToken::new();
     let mut tasks = Vec::new();
+    tasks.push(tokio::spawn(runtimes::watch_updates(
+        app.clone(),
+        cancel.clone(),
+    )));
 
     match dns::bind(dns_port).await {
         Ok((socket, port)) => {

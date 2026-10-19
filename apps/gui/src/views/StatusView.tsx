@@ -3,6 +3,7 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import type { CheckStatus } from "../api/gen/CheckStatus";
 import type { StatusResponse } from "../api/gen/StatusResponse";
 import { useDoctor } from "../api/queries";
+import { UpdatesCard } from "../components/Updates";
 import { Badge, Button, Card, ErrorNote } from "../components/ui";
 
 const tone: Record<CheckStatus, "good" | "warn" | "bad"> = {
@@ -35,6 +36,7 @@ export function StatusView({ status }: { status: StatusResponse }) {
           ))}
         </dl>
       </Card>
+      <UpdatesCard status={status} />
       {isTauri() && <CliCard />}
       <Card
         title="Doctor"

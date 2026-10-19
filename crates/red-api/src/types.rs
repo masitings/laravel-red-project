@@ -511,6 +511,14 @@ pub struct RuntimeInfo {
     /// Unix time of the installation.
     #[ts(type = "number")]
     pub installed: u64,
+    /// Host it was downloaded from (`github.com` for RED's own builds).
+    #[serde(default)]
+    pub source: Option<String>,
+    /// Version to update to (`POST /v1/runtimes` with this line), when the
+    /// catalog has a newer build for the line, or RED's own build of a PHP
+    /// that came from a fallback source.
+    #[serde(default)]
+    pub update: Option<String>,
 }
 
 /// A version RED can download.

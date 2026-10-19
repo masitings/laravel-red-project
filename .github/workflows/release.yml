@@ -1,5 +1,14 @@
 name: Release
 
+# Builds the command-line tools and the desktop app for a `v*` tag and
+# publishes them on a GitHub release. Optional, each enabled by its secrets
+# (see docs/releasing.md):
+#   - Developer ID signing + notarization  (APPLE_CERTIFICATE, ...)
+#   - app auto-update                       (TAURI_SIGNING_PRIVATE_KEY + vars.TAURI_UPDATER_PUBKEY)
+#   - Homebrew tap                          (HOMEBREW_TAP_TOKEN)
+# Without them the release still works: binaries are ad-hoc signed, the app
+# does not update itself, and the tap is left alone.
+
 on:
   push:
     tags: ["v*"]
@@ -35,6 +44,19 @@ jobs:
           key: ${{ matrix.target }}
       - name: Build CLI, daemon and helper
         run: cargo build --release --locked --target ${{ matrix.target }} -p red-cli -p red-daemon -p red-helper
+      - name: Signing certificate
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: scripts/release/import-certificate.sh
+      - name: Sign and notarize
+        if: runner.os == 'macOS'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: scripts/release/sign-binaries.sh "target/${{ matrix.target }}/release"
       - name: Package
         shell: bash
         run: |
@@ -58,6 +80,8 @@ jobs:
       matrix:
         target: [aarch64-apple-darwin, x86_64-apple-darwin]
     runs-on: macos-15
+    env:
+      HAS_UPDATER_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust toolchain and target
@@ -77,6 +101,11 @@ jobs:
           cache-dependency-path: apps/gui/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
         working-directory: apps/gui
+      - name: Signing certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: scripts/release/import-certificate.sh
       - name: Build the bundled CLI, daemon and helper
         run: |
           cargo build --release --locked --target ${{ matrix.target }} -p red-cli -p red-daemon -p red-helper
@@ -84,17 +113,60 @@ jobs:
           for bin in red redd red-helper; do
             cp "target/${{ matrix.target }}/release/$bin" "apps/gui/src-tauri/binaries/$bin-${{ matrix.target }}"
           done
+      - name: Release configuration
+        env:
+          UPDATER_PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
+          REPO: ${{ github.repository }}
+        run: |
+          config=apps/gui/src-tauri/tauri.bundle.conf.json
+          if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
+            config=$(jq --arg id "$APPLE_SIGNING_IDENTITY" '.bundle.macOS.signingIdentity = $id' <<<"$(cat "$config")")
+          else
+            config=$(cat "$config")
+          fi
+          if [ "$HAS_UPDATER_KEY" = "true" ]; then
+            if [ -z "$UPDATER_PUBKEY" ]; then
+              echo "::error::TAURI_SIGNING_PRIVATE_KEY is set but the TAURI_UPDATER_PUBKEY variable is not"
+              exit 1
+            fi
+            config=$(jq --arg key "$UPDATER_PUBKEY" \
+              --arg url "https://github.com/$REPO/releases/latest/download/latest.json" \
+              '.bundle.createUpdaterArtifacts = true | .plugins.updater = {pubkey: $key, endpoints: [$url]}' <<<"$config")
+          fi
+          echo "$config" > "$RUNNER_TEMP/release.conf.json"
+          cat "$RUNNER_TEMP/release.conf.json"
       - name: Build RED.app and the disk image
         working-directory: apps/gui
-        run: pnpm tauri build --target ${{ matrix.target }} --bundles app,dmg --config src-tauri/tauri.bundle.conf.json
-      - name: Collect the disk image
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_ID_SECRET: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD_SECRET: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID_SECRET: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          # Tauri notarizes when these are set; only set them when all are there.
+          if [ -n "${APPLE_SIGNING_IDENTITY:-}" ] && [ -n "$APPLE_ID_SECRET" ] \
+             && [ -n "$APPLE_PASSWORD_SECRET" ] && [ -n "$APPLE_TEAM_ID_SECRET" ]; then
+            export APPLE_ID="$APPLE_ID_SECRET" APPLE_PASSWORD="$APPLE_PASSWORD_SECRET" APPLE_TEAM_ID="$APPLE_TEAM_ID_SECRET"
+          fi
+          pnpm tauri build --target ${{ matrix.target }} --bundles app,dmg --config "$RUNNER_TEMP/release.conf.json"
+      - name: Collect the disk image and the update archive
         shell: bash
         run: |
           mkdir -p dist
           arch="${{ matrix.target }}"; arch="${arch%%-*}"
-          dmg=$(ls target/${{ matrix.target }}/release/bundle/dmg/*.dmg | head -1)
+          bundle="target/${{ matrix.target }}/release/bundle"
+          dmg=$(find "$bundle/dmg" -name "*.dmg" | head -1)
           cp "$dmg" "dist/RED-${GITHUB_REF_NAME}-macos-$arch.dmg"
-          (cd dist && shasum -a 256 *.dmg > "RED-${GITHUB_REF_NAME}-macos-$arch.dmg.sha256")
+          if [ "$HAS_UPDATER_KEY" = "true" ]; then
+            cp "$bundle/macos/RED.app.tar.gz" "dist/RED-${GITHUB_REF_NAME}-macos-$arch.app.tar.gz"
+            cp "$bundle/macos/RED.app.tar.gz.sig" "dist/RED-${GITHUB_REF_NAME}-macos-$arch.app.tar.gz.sig"
+          fi
+          cd dist
+          for file in *.dmg *.app.tar.gz; do
+            [ -f "$file" ] && shasum -a 256 "$file" > "$file.sha256"
+          done
+          ls -l
       - uses: actions/upload-artifact@v4
         with:
           name: app-${{ matrix.target }}
@@ -114,7 +186,50 @@ jobs:
         run: |
           version="${GITHUB_REF_NAME#v}"
           awk -v v="$version" '$0 ~ "^## \\[" v "\\]" {found=1; next} found && /^## \[/ {exit} found' CHANGELOG.md > notes.md
+      - name: Update manifest for the desktop app
+        run: |
+          shopt -s nullglob
+          archives=(dist/*.app.tar.gz)
+          if [ ${#archives[@]} -gt 0 ]; then
+            python3 scripts/release/updater-manifest.py "$GITHUB_REF_NAME" notes.md \
+              "https://github.com/${GITHUB_REPOSITORY}/releases/download/$GITHUB_REF_NAME" dist > dist/latest.json
+            cat dist/latest.json
+          fi
       - uses: softprops/action-gh-release@v2
         with:
           body_path: notes.md
           files: dist/*
+
+  homebrew:
+    name: Homebrew tap
+    needs: release
+    runs-on: ubuntu-24.04
+    env:
+      TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO || format('{0}/homebrew-red', github.repository_owner) }}
+    steps:
+      - uses: actions/checkout@v4
+        if: env.TAP_TOKEN != ''
+      - uses: actions/download-artifact@v4
+        if: env.TAP_TOKEN != ''
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Update the formula and the cask
+        if: env.TAP_TOKEN != ''
+        run: |
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/${TAP_REPO}.git" tap
+          python3 scripts/release/homebrew.py "$GITHUB_REF_NAME" "$GITHUB_REPOSITORY" dist tap
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula Casks 2>/dev/null || git add Formula
+          if git diff --cached --quiet; then
+            echo "tap already up to date"
+          else
+            git commit -m "red ${GITHUB_REF_NAME#v}"
+            git push
+          fi
+      - name: Skipped
+        if: env.TAP_TOKEN == ''
+        run: echo "HOMEBREW_TAP_TOKEN is not set; the Homebrew tap was not updated."

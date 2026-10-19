@@ -161,6 +161,47 @@ pub fn start_daemon() -> Result<String, CommandError> {
     Ok(redd.display().to_string())
 }
 
+/// Restart redd through its login agent (`red restart`), e.g. after the app
+/// updated itself and the running daemon is still the old version.
+#[tauri::command]
+pub async fn restart_daemon() -> Result<String, CommandError> {
+    let red = bundled("red")
+        .into_iter()
+        .chain(home_bin("red"))
+        .chain(red_platform::binaries::in_path("red"))
+        .find(|p| p.is_file())
+        .ok_or_else(|| CommandError {
+            hint: Some("Install the command-line tool from the Status tab first.".into()),
+            ..CommandError::new("not_found", "red was not found")
+        })?;
+    let output = tokio::process::Command::new(&red)
+        .arg("restart")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .await
+        .map_err(|err| {
+            CommandError::new("internal", format!("cannot run {}: {err}", red.display()))
+        })?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    } else {
+        Err(CommandError::new(
+            "internal",
+            format!(
+                "`red restart` failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ),
+        ))
+    }
+}
+
+/// Whether this build can update itself (it was released with an update
+/// signing key).
+#[tauri::command]
+pub fn updater_enabled(app: tauri::AppHandle) -> bool {
+    crate::updater_configured(app.config())
+}
+
 /// Where the command-line tool is bundled and whether it is on `PATH`.
 #[derive(Debug, Serialize)]
 pub struct CliStatus {
