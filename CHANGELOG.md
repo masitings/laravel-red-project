@@ -6,30 +6,12 @@ All notable changes to RED Project. The format follows
 
 ## [Unreleased]
 
-### Linux
-- `red trust` and `red untrust` work on Linux: the system store (Debian and
-  Ubuntu through `update-ca-certificates`, Fedora, Arch and openSUSE through
-  `trust anchor`) and the NSS databases of Chrome and every Firefox profile
-  (including Snap and Flatpak) through `certutil`.
-- `red dns:install` without the helper writes the systemd-resolved drop-in
-  itself and restarts systemd-resolved; without systemd-resolved it says
-  how to point `.test` at redd with dnsmasq. `red dns:uninstall` removes
-  only RED's own file.
-- `red doctor` checks on Linux: the resolver drop-in and its port, whether
-  `/etc/resolv.conf` goes through systemd-resolved, whether systemd is new
-  enough (246+) for a DNS port other than 53, and whether the system and
-  each browser trust RED's CA.
-- Releases include the command-line tools for Linux arm64, and the desktop
-  app as `.deb` (x86_64, arm64) and AppImage (x86_64, which can update
-  itself). Linux binaries are built on Ubuntu 22.04 so they run on older
-  distributions; the Homebrew formula covers Linux arm64.
-- redd's PATH includes Homebrew on Linux (`/home/linuxbrew/.linuxbrew`).
-
 ## [0.3.0] - 2026-10-19
 
 Self-contained runtimes and updates: RED downloads PHP, databases, Node.js
 and Composer itself, keeps them up to date, and the release pipeline can
-sign, notarize and publish to Homebrew.
+sign, notarize and publish to Homebrew. Linux gets CA trust, DNS setup,
+doctor checks and its own packages.
 
 ### Runtimes
 - RED downloads and manages PHP, MySQL, PostgreSQL, Valkey, Node.js and
@@ -95,6 +77,25 @@ sign, notarize and publish to Homebrew.
 - When port 80 or 443 is taken (Herd, Valet, another server), redd serves
   on 8080/8443 instead of not serving at all, and `red doctor` names what
   holds the port and whether `/etc/resolver/test` belongs to another tool.
+
+### Linux
+- `red trust` and `red untrust` work on Linux: the system store (Debian and
+  Ubuntu through `update-ca-certificates`, Fedora, Arch and openSUSE through
+  `trust anchor`) and the NSS databases of Chrome and every Firefox profile
+  (including Snap and Flatpak) through `certutil`.
+- `red dns:install` without the helper writes the systemd-resolved drop-in
+  itself and restarts systemd-resolved; without systemd-resolved it says
+  how to point `.test` at redd with dnsmasq. `red dns:uninstall` removes
+  only RED's own file.
+- `red doctor` checks on Linux: the resolver drop-in and its port, whether
+  `/etc/resolv.conf` goes through systemd-resolved, whether systemd is new
+  enough (246+) for a DNS port other than 53, and whether the system and
+  each browser trust RED's CA.
+- Releases include the command-line tools for Linux arm64, and the desktop
+  app as `.deb` (x86_64, arm64) and AppImage (x86_64, which can update
+  itself). Linux binaries are built on Ubuntu 22.04 so they run on older
+  distributions; the Homebrew formula covers Linux arm64.
+- redd's PATH includes Homebrew on Linux (`/home/linuxbrew/.linuxbrew`).
 
 ### Fixed
 - MySQL services accept `root` from 127.0.0.1 (MySQL's root account is
