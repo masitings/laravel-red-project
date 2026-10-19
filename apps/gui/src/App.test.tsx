@@ -256,6 +256,14 @@ function mockDaemon() {
       settings = { ...settings, ...(body as object), restart_required: true };
       return settings;
     }
+    if (method === "POST" && path.endsWith("/backup")) {
+      return {
+        file: "/Users/me/Library/Application Support/RED/data/backups/mysql/shop-20261019-101500.sql.gz",
+        database: "shop",
+        size: 4096,
+        created: 1_792_000_000,
+      };
+    }
     if (method !== "GET") return null;
     switch (path) {
       case "/v1/status":
@@ -518,6 +526,8 @@ describe("App", () => {
     await waitFor(() =>
       expect(api).toHaveBeenCalledWith("POST", "/v1/services/mysql/databases/shop/backup"),
     );
+    expect(await screen.findByText("Backed up shop")).toBeInTheDocument();
+    expect(screen.getByText(/4\.0 KB · .*shop-20261019-101500\.sql\.gz/)).toBeInTheDocument();
   });
 
   it("shares a site through Cloudflare Tunnel", async () => {
