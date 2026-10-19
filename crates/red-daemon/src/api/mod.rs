@@ -50,6 +50,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route(endpoints::PHP, get(list_php))
         .route(endpoints::PHP_DEFAULT, put(set_default_php))
+        .route(endpoints::XDEBUG, put(set_xdebug))
         .merge(services::routes())
         .merge(mail::routes())
         .merge(dumps::routes())
@@ -439,9 +440,45 @@ async fn list_php(State(app): App) -> Json<PhpListResponse> {
                 version: i.version,
                 full_version: i.full_version,
                 fpm_path: i.fpm.display().to_string(),
+                xdebug: i.xdebug.map(|p| p.display().to_string()),
+                xdebug_loaded: i.xdebug_loaded,
             })
             .collect(),
+        xdebug: api_xdebug(state.xdebug),
+        xdebug_port: app.config.xdebug_port,
     })
+}
+
+fn api_xdebug(mode: red_core::xdebug::XdebugMode) -> red_api::XdebugMode {
+    match mode {
+        red_core::xdebug::XdebugMode::Off => red_api::XdebugMode::Off,
+        red_core::xdebug::XdebugMode::Auto => red_api::XdebugMode::Auto,
+        red_core::xdebug::XdebugMode::On => red_api::XdebugMode::On,
+    }
+}
+
+fn core_xdebug(mode: red_api::XdebugMode) -> red_core::xdebug::XdebugMode {
+    match mode {
+        red_api::XdebugMode::Off => red_core::xdebug::XdebugMode::Off,
+        red_api::XdebugMode::Auto => red_core::xdebug::XdebugMode::Auto,
+        red_api::XdebugMode::On => red_core::xdebug::XdebugMode::On,
+    }
+}
+
+/// `PUT /v1/xdebug`: switch Xdebug off, to on-demand (`auto`) or always on.
+/// Xdebug pools pick the new settings up on their next request.
+async fn set_xdebug(
+    State(app): App,
+    Json(body): Json<red_api::XdebugRequest>,
+) -> ApiResult<PhpListResponse> {
+    let mode = core_xdebug(body.mode);
+    app.update_state(|s| s.xdebug = mode).map_err(internal)?;
+    if mode == red_core::xdebug::XdebugMode::Off {
+        app.php.stop_xdebug_pools().await;
+    }
+    tracing::info!(%mode, "Xdebug mode changed");
+    app.notify(red_api::Event::PhpChanged);
+    Ok(list_php(State(app)).await)
 }
 
 async fn set_default_php(

@@ -14,6 +14,7 @@ pub mod services;
 pub mod sites;
 pub mod state;
 pub mod time;
+pub mod xdebug;
 
 pub use config::{Config, ConfigError};
 pub use services::{ServiceConfig, ServiceKind};

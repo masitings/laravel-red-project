@@ -62,6 +62,8 @@ pub struct Config {
     /// in the background as soon as they are found. Off by default: RED
     /// only reports them (`red runtimes`, the app) until you update.
     pub runtimes_auto_update: bool,
+    /// Port Xdebug connects to; your IDE listens there (default 9003).
+    pub xdebug_port: u16,
 }
 
 impl Default for Config {
@@ -76,6 +78,7 @@ impl Default for Config {
             dump_port: DEFAULT_DUMP_PORT,
             runtimes_manifest: None,
             runtimes_auto_update: false,
+            xdebug_port: crate::xdebug::DEFAULT_CLIENT_PORT,
         }
     }
 }

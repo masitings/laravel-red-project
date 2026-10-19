@@ -29,6 +29,8 @@ pub struct State {
     pub services: BTreeMap<String, crate::ServiceConfig>,
     /// Send `dump()` output from sites to RED instead of the page.
     pub capture_dumps: bool,
+    /// When sites run with Xdebug (see [`crate::xdebug`]).
+    pub xdebug: crate::xdebug::XdebugMode,
 }
 
 /// Errors produced while reading or writing the state file.

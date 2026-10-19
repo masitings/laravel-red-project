@@ -31,6 +31,7 @@ pub async fn run(app: &AppState) -> DoctorReport {
     checks.push(ca_trust(app).await);
     checks.push(helper(app).await);
     checks.push(autostart());
+    checks.push(xdebug(app));
     if let Some(services) = services(app) {
         checks.push(services);
     }
@@ -231,6 +232,64 @@ fn resolver_file(app: &AppState) -> Check {
             Some("red dns:install"),
         ),
     }
+}
+
+fn xdebug(app: &AppState) -> Check {
+    let mode = app.state_snapshot().xdebug;
+    let with: Vec<String> = app
+        .php
+        .installs()
+        .into_iter()
+        .filter(|i| i.xdebug.is_some() || i.xdebug_loaded)
+        .map(|i| {
+            if i.xdebug_loaded {
+                format!("{} (always on through its php.ini)", i.version)
+            } else {
+                i.version
+            }
+        })
+        .collect();
+    let (status, detail, fix) = xdebug_check(mode, &with, app.config.xdebug_port);
+    check("xdebug", "Xdebug", status, detail, fix)
+}
+
+fn xdebug_check(
+    mode: red_core::xdebug::XdebugMode,
+    with: &[String],
+    port: u16,
+) -> (CheckStatus, String, Option<&'static str>) {
+    use red_core::xdebug::XdebugMode;
+    if mode == XdebugMode::Off {
+        return (
+            CheckStatus::Ok,
+            "off; `red xdebug:auto` debugs requests that carry XDEBUG_SESSION".into(),
+            None,
+        );
+    }
+    if with.is_empty() {
+        return (
+            CheckStatus::Warn,
+            "no installed PHP has Xdebug".into(),
+            Some(if cfg!(target_os = "macos") {
+                "red runtimes:update php (RED's macOS builds include Xdebug)"
+            } else {
+                "install your distribution's php-xdebug package"
+            }),
+        );
+    }
+    let how = if mode == XdebugMode::On {
+        "on for every request"
+    } else {
+        "on demand (XDEBUG_SESSION cookie or XDEBUG_TRIGGER)"
+    };
+    (
+        CheckStatus::Ok,
+        format!(
+            "{how} for PHP {}; IDE listens on port {port}",
+            with.join(", ")
+        ),
+        None,
+    )
 }
 
 /// What the Linux resolver check looks at.
@@ -607,6 +666,24 @@ mod tests {
         let (status, detail, _) = linux_resolver(&none);
         assert_eq!(status, CheckStatus::Warn);
         assert!(detail.contains("server=/test/127.0.0.1#53530"));
+    }
+
+    #[test]
+    fn reports_xdebug() {
+        use red_core::xdebug::XdebugMode;
+        assert_eq!(xdebug_check(XdebugMode::Off, &[], 9003).0, CheckStatus::Ok);
+        assert_eq!(
+            xdebug_check(XdebugMode::Auto, &[], 9003).0,
+            CheckStatus::Warn
+        );
+        let (status, detail, _) = xdebug_check(XdebugMode::Auto, &["8.4".into()], 9003);
+        assert_eq!(status, CheckStatus::Ok);
+        assert!(detail.contains("on demand") && detail.contains("8.4") && detail.contains("9003"));
+        assert!(
+            xdebug_check(XdebugMode::On, &["8.4".into()], 9003)
+                .1
+                .contains("every request")
+        );
     }
 
     #[test]

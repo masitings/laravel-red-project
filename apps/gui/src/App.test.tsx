@@ -76,14 +76,20 @@ const php: PhpListResponse = {
       full_version: "8.4.12",
       fpm_path: "/opt/homebrew/opt/php/sbin/php-fpm",
       running: true,
+      xdebug: "/data/runtimes/php/8.4/lib/xdebug.so",
+      xdebug_loaded: false,
     },
     {
       version: "8.2",
       full_version: "8.2.29",
       fpm_path: "/opt/homebrew/opt/php@8.2/sbin/php-fpm",
       running: false,
+      xdebug: null,
+      xdebug_loaded: false,
     },
   ],
+  xdebug: "auto",
+  xdebug_port: 9003,
 };
 
 const doctor: DoctorReport = {
@@ -297,6 +303,19 @@ describe("App", () => {
     await waitFor(() =>
       expect(api).toHaveBeenCalledWith("PUT", "/v1/php/default", { version: "8.2" }),
     );
+  });
+
+  it("switches Xdebug between off, on demand and always", async () => {
+    mockDaemon();
+    renderApp();
+    fireEvent.click(await screen.findByText("PHP"));
+    expect(await screen.findByRole("radio", { name: "On demand" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    expect(screen.getByText("No Xdebug for PHP 8.2", { exact: false })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("radio", { name: "Always" }));
+    await waitFor(() => expect(api).toHaveBeenCalledWith("PUT", "/v1/xdebug", { mode: "on" }));
   });
 
   it("installs and updates PHP builds", async () => {

@@ -171,12 +171,17 @@ impl RuntimeManager {
     pub async fn with_updates(&self, mut installed: Vec<RuntimeInfo>) -> Vec<RuntimeInfo> {
         let red_host = self.manifest_url.as_deref().and_then(runtimes::url_host);
         for info in &mut installed {
+            let sha256 = std::fs::read(Path::new(&info.path).join(MARKER_FILE))
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<Marker>(&bytes).ok())
+                .and_then(|marker| marker.sha256);
             if let Ok(release) = self.resolve(core_kind(info.kind), &info.line).await
                 && release.line == info.line
             {
                 info.update = runtimes::update_for(
                     &info.version,
                     info.source.as_deref(),
+                    sha256.as_deref(),
                     &release,
                     red_host.as_deref(),
                 );
@@ -861,6 +866,7 @@ fn write_marker(staging: &Path, release: &Release) -> Result<(), String> {
             .artifacts
             .first()
             .and_then(|a| runtimes::url_host(&a.url)),
+        sha256: release.artifacts.first().and_then(|a| a.sha256.clone()),
     };
     std::fs::write(
         staging.join(MARKER_FILE),

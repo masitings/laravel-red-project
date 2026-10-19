@@ -14,6 +14,7 @@ import type { ServiceKind } from "./gen/ServiceKind";
 import type { ServicesResponse } from "./gen/ServicesResponse";
 import type { SiteInfo } from "./gen/SiteInfo";
 import type { StatusResponse } from "./gen/StatusResponse";
+import type { XdebugMode } from "./gen/XdebugMode";
 
 export const keys = {
   status: ["status"] as const,
@@ -117,6 +118,13 @@ export function useSetDefaultPhp() {
   return useAction(
     (version: string) => api("PUT", "/v1/php/default", { version }),
     [keys.php, keys.sites],
+  );
+}
+
+export function useSetXdebug() {
+  return useAction(
+    (mode: XdebugMode) => api("PUT", "/v1/xdebug", { mode }),
+    [keys.php, keys.doctor],
   );
 }
 

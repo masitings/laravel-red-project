@@ -198,7 +198,7 @@ async fn install_with(
 fn update_text(info: &RuntimeInfo) -> String {
     match &info.update {
         None => "-".into(),
-        Some(version) if *version == info.version => format!("{version} (RED build)"),
+        Some(version) if *version == info.version => format!("{version} (new build)"),
         Some(version) => version.clone(),
     }
 }
@@ -326,6 +326,6 @@ mod tests {
         info.update = Some("8.4.26".into());
         assert_eq!(update_text(&info), "8.4.26");
         info.update = Some("8.4.25".into());
-        assert_eq!(update_text(&info), "8.4.25 (RED build)");
+        assert_eq!(update_text(&info), "8.4.25 (new build)");
     }
 }

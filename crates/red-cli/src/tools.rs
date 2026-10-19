@@ -21,6 +21,10 @@ use crate::{Ctx, cwd, site_containing};
 pub(crate) struct Php {
     pub binary: PathBuf,
     pub version: Option<String>,
+    /// What redd knows about Xdebug for this PHP (`None` without redd).
+    pub xdebug: Option<red_platform::php::Xdebug>,
+    pub xdebug_mode: red_core::xdebug::XdebugMode,
+    pub xdebug_port: u16,
 }
 
 /// The PHP CLI to use in the current directory.
@@ -31,6 +35,9 @@ pub(crate) async fn resolve_php(ctx: &Ctx<'_>) -> anyhow::Result<Php> {
         .and_then(|c| c.php)
         .and_then(|v| red_core::php::minor_version(&v));
     let mut installs: Vec<(String, PathBuf)> = Vec::new();
+    let mut xdebug_info: Vec<(String, red_platform::php::Xdebug)> = Vec::new();
+    let mut xdebug_mode = red_core::xdebug::XdebugMode::default();
+    let mut xdebug_port = red_core::xdebug::DEFAULT_CLIENT_PORT;
 
     // redd knows isolation and the default version, and where PHP lives.
     if let Ok(list) = ctx.client.get::<PhpListResponse>(endpoints::PHP).await {
@@ -43,7 +50,22 @@ pub(crate) async fn resolve_php(ctx: &Ctx<'_>) -> anyhow::Result<Php> {
         if wanted.is_none() {
             wanted = list.default.clone();
         }
+        xdebug_mode = match list.xdebug {
+            red_api::XdebugMode::Off => red_core::xdebug::XdebugMode::Off,
+            red_api::XdebugMode::Auto => red_core::xdebug::XdebugMode::Auto,
+            red_api::XdebugMode::On => red_core::xdebug::XdebugMode::On,
+        };
+        if list.xdebug_port != 0 {
+            xdebug_port = list.xdebug_port;
+        }
         for install in list.installs {
+            xdebug_info.push((
+                install.version.clone(),
+                red_platform::php::Xdebug {
+                    extension: install.xdebug.as_ref().map(PathBuf::from),
+                    loaded_by_ini: install.xdebug_loaded,
+                },
+            ));
             if let Some(cli) = red_platform::binaries::php_cli_for_fpm(Path::new(&install.fpm_path))
             {
                 installs.push((install.version, cli));
@@ -67,6 +89,12 @@ pub(crate) async fn resolve_php(ctx: &Ctx<'_>) -> anyhow::Result<Php> {
             return Ok(Php {
                 binary: cli.clone(),
                 version: Some(version.clone()),
+                xdebug: xdebug_info
+                    .iter()
+                    .find(|(v, _)| v == version)
+                    .map(|(_, x)| x.clone()),
+                xdebug_mode,
+                xdebug_port,
             });
         }
         let installed: Vec<&str> = installs.iter().map(|(v, _)| v.as_str()).collect();
@@ -83,6 +111,12 @@ pub(crate) async fn resolve_php(ctx: &Ctx<'_>) -> anyhow::Result<Php> {
         return Ok(Php {
             binary: cli.clone(),
             version: Some(version.clone()),
+            xdebug: xdebug_info
+                .iter()
+                .find(|(v, _)| v == version)
+                .map(|(_, x)| x.clone()),
+            xdebug_mode,
+            xdebug_port,
         });
     }
     let binary = red_platform::binaries::in_path("php")
@@ -92,6 +126,9 @@ pub(crate) async fn resolve_php(ctx: &Ctx<'_>) -> anyhow::Result<Php> {
     Ok(Php {
         binary,
         version: None,
+        xdebug: None,
+        xdebug_mode,
+        xdebug_port,
     })
 }
 
@@ -226,6 +263,35 @@ fn parent(path: &Path) -> &Path {
     path.parent().unwrap_or(Path::new("/"))
 }
 
+/// `-d` settings that load Xdebug into a CLI run: when Xdebug is `on`, or
+/// `auto` and `XDEBUG_TRIGGER`/`XDEBUG_SESSION`/`XDEBUG_CONFIG` is set.
+fn xdebug_args(php: &Php) -> Vec<OsString> {
+    use red_core::xdebug::{XdebugMode, has_env_trigger, ini_settings};
+    let wanted = match php.xdebug_mode {
+        XdebugMode::Off => false,
+        XdebugMode::On => true,
+        XdebugMode::Auto => has_env_trigger(|name| std::env::var(name).ok()),
+    };
+    if !wanted {
+        return Vec::new();
+    }
+    let xdebug = php
+        .xdebug
+        .clone()
+        .unwrap_or_else(|| red_platform::php::xdebug_for(&php.binary));
+    let Some(extension) = xdebug.extension.filter(|_| !xdebug.loaded_by_ini) else {
+        return Vec::new();
+    };
+    let output_dir = red_platform::Paths::discover()
+        .map(|p| p.log_dir.join("xdebug"))
+        .unwrap_or_else(|_| std::env::temp_dir());
+    let _ = std::fs::create_dir_all(&output_dir);
+    ini_settings(&extension, php.xdebug_mode, &output_dir, php.xdebug_port)
+        .into_iter()
+        .flat_map(|setting| [OsString::from("-d"), OsString::from(setting)])
+        .collect()
+}
+
 /// `-c <php.ini>` for PHP builds installed by RED, which have no ini file
 /// of their own.
 fn ini_args(php: &Path) -> Vec<OsString> {
@@ -238,6 +304,7 @@ fn ini_args(php: &Path) -> Vec<OsString> {
 pub(crate) async fn php(ctx: &Ctx<'_>, args: &[OsString]) -> anyhow::Result<()> {
     let php = resolve_php(ctx).await?;
     let mut full = ini_args(&php.binary);
+    full.extend(xdebug_args(&php));
     full.extend_from_slice(args);
     exec(&php.binary, &full, &[parent(&php.binary)])
 }

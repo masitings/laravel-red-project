@@ -130,6 +130,28 @@ Services start with redd (unless added with `--no-autostart`) and are
 restarted if they crash. MySQL/MariaDB and PostgreSQL get a `root` user with
 no password, like Laravel's defaults.
 
+### Xdebug
+
+Sites run without Xdebug, so they stay fast. With Xdebug on demand (the
+default), a request that carries the `XDEBUG_SESSION` cookie (set by your IDE
+or an Xdebug browser extension), or `XDEBUG_SESSION_START` / `XDEBUG_TRIGGER`
+in its URL, runs in a second PHP-FPM pool with Xdebug loaded, which connects
+to your IDE on port 9003.
+
+```sh
+red xdebug        # status per PHP version
+red xdebug:on     # every request and every `red php` run
+red xdebug:auto   # on demand (default)
+red xdebug:off
+XDEBUG_TRIGGER=1 red php artisan migrate   # debug a command
+```
+
+RED's macOS PHP builds include Xdebug. Other installations work when they
+have `xdebug.so` in their extension directory (`pecl install xdebug`, the
+`php-xdebug` packages); if their `php.ini` already loads it, it simply
+stays on. The port is `xdebug_port` in `config.toml`; profiles and traces
+(`XDEBUG_PROFILE`, `XDEBUG_TRACE`) go to RED's log directory under `xdebug/`.
+
 ### Mail, dumps and logs
 
 ```sh
@@ -253,7 +275,7 @@ Where RED keeps its files:
 | M1 MVP ✓ | Park/link, `.test` DNS, local HTTPS, multiple PHP versions, proxies with WebSocket, GUI for sites and PHP | v0.1.0 |
 | M2 Dev tools ✓ | MySQL/PostgreSQL/Valkey, mail catcher, dumps, log viewer, `red.toml`, Node per site, desktop app bundle | v0.2.0 |
 | M3 Distribution | Downloadable runtimes ✓, runtime and app updates ✓, signing/notarization and Homebrew tap in CI ✓, Linux DNS/trust/packages ✓ | Signed releases on both OSes |
-| M4 Advanced | On-demand Xdebug, sharing/tunnels, profiler, MCP server, git workspaces | v1.0.0 |
+| M4 Advanced | On-demand Xdebug ✓, sharing/tunnels, profiler, MCP server, git workspaces | v1.0.0 |
 
 ## Contributing
 

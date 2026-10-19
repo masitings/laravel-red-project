@@ -189,6 +189,28 @@ pub struct PhpInstallInfo {
     pub fpm_path: String,
     /// `true` while RED runs a PHP-FPM pool for this version.
     pub running: bool,
+    /// The `xdebug.so` RED loads for this version on demand, if it has one.
+    #[serde(default)]
+    pub xdebug: Option<String>,
+    /// Xdebug is loaded by this installation's own `php.ini`, so it always
+    /// runs and RED's on-demand switch does not apply.
+    #[serde(default)]
+    pub xdebug_loaded: bool,
+}
+
+/// When sites run with Xdebug.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum XdebugMode {
+    /// Never.
+    Off,
+    /// For requests with an Xdebug trigger (the `XDEBUG_SESSION` cookie, or
+    /// `XDEBUG_SESSION_START` / `XDEBUG_TRIGGER` in the query).
+    #[default]
+    Auto,
+    /// For every request.
+    On,
 }
 
 /// Response of `GET /v1/php`.
@@ -199,6 +221,19 @@ pub struct PhpListResponse {
     pub default: Option<String>,
     /// Installed versions, newest first.
     pub installs: Vec<PhpInstallInfo>,
+    /// When sites run with Xdebug.
+    #[serde(default)]
+    pub xdebug: XdebugMode,
+    /// Port Xdebug connects to (where the IDE listens).
+    #[serde(default)]
+    pub xdebug_port: u16,
+}
+
+/// Body of `PUT /v1/xdebug`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct XdebugRequest {
+    pub mode: XdebugMode,
 }
 
 // ---- services ------------------------------------------------------------------

@@ -6,6 +6,28 @@ All notable changes to RED Project. The format follows
 
 ## [Unreleased]
 
+### Xdebug
+- Xdebug on demand: sites run in a PHP-FPM pool without Xdebug, and RED
+  starts a second pool per PHP version with Xdebug loaded for requests that
+  ask for it: the `XDEBUG_SESSION` / `XDEBUG_TRIGGER` / `XDEBUG_PROFILE` /
+  `XDEBUG_TRACE` cookies, or `XDEBUG_SESSION_START` / `XDEBUG_TRIGGER` in
+  the query. `red xdebug:on` sends every request there, `red xdebug:off`
+  none; `red xdebug` shows the mode and which PHP versions have Xdebug.
+- `red php` loads Xdebug when it is on, or on demand with `XDEBUG_TRIGGER`,
+  `XDEBUG_SESSION` or `XDEBUG_CONFIG` set.
+- Xdebug connects to 127.0.0.1 on port 9003 (`xdebug_port` in
+  `config.toml`); profiles and traces go to RED's log directory. Responses
+  from the Xdebug pool carry an `X-RED-Xdebug: 1` header.
+- RED's macOS PHP builds now include `xdebug.so` (the Runtimes workflow
+  builds it as a shared extension and ships PHP without it if that fails).
+  Other installations are used when their extension directory has
+  `xdebug.so`; one whose `php.ini` already loads Xdebug is left as it is.
+- The app's PHP page has an Xdebug switch (Off, On demand, Always) and
+  shows which versions have Xdebug; `red doctor` reports it.
+- Runtimes remember the checksum of the archive they came from, so a
+  rebuilt archive of the same version (such as PHP with Xdebug) is offered
+  as an update ("new build").
+
 ## [0.3.0] - 2026-10-19
 
 Self-contained runtimes and updates: RED downloads PHP, databases, Node.js

@@ -19,6 +19,7 @@ mod services;
 mod system;
 mod tools;
 mod uninstall;
+mod xdebug;
 
 /// red: local PHP development environment.
 #[derive(Debug, Parser)]
@@ -105,6 +106,17 @@ enum Command {
         #[arg(value_name = "VERSION")]
         line: String,
     },
+    /// Show when sites and `red php` run with Xdebug.
+    Xdebug,
+    /// Run Xdebug for every request and every `red php`.
+    #[command(name = "xdebug:on")]
+    XdebugOn,
+    /// Run Xdebug only when asked (XDEBUG_SESSION cookie, XDEBUG_TRIGGER).
+    #[command(name = "xdebug:auto")]
+    XdebugAuto,
+    /// Never run Xdebug.
+    #[command(name = "xdebug:off")]
+    XdebugOff,
     /// Set the PHP version used by sites that are not isolated.
     Use {
         #[arg(value_name = "VERSION")]
@@ -755,6 +767,10 @@ async fn run(cli: &Cli) -> anyhow::Result<()> {
         }
         Command::ServicesEnv { name } => services::env(&ctx, name).await?,
         Command::Init => project::init(&ctx).await?,
+        Command::Xdebug => xdebug::status(&ctx).await?,
+        Command::XdebugOn => xdebug::set(&ctx, red_api::XdebugMode::On).await?,
+        Command::XdebugAuto => xdebug::set(&ctx, red_api::XdebugMode::Auto).await?,
+        Command::XdebugOff => xdebug::set(&ctx, red_api::XdebugMode::Off).await?,
         Command::Php { args } => tools::php(&ctx, args).await?,
         Command::Composer { args } => tools::composer(&ctx, args).await?,
         Command::Node { args } => tools::node(&ctx, "node", args).await?,
@@ -1014,6 +1030,7 @@ mod tests {
         assert!(Cli::try_parse_from(["red", "runtimes:install", "postgres", "17"]).is_ok());
         assert!(Cli::try_parse_from(["red", "runtimes:update"]).is_ok());
         assert!(Cli::try_parse_from(["red", "uninstall", "--purge", "-y"]).is_ok());
+        assert!(Cli::try_parse_from(["red", "xdebug:auto"]).is_ok());
         assert!(Cli::try_parse_from(["red", "runtimes:update", "php", "8.4"]).is_ok());
         assert!(Cli::try_parse_from(["red", "use", "8.4"]).is_ok());
         assert!(Cli::try_parse_from(["red", "--version"]).is_err()); // prints version

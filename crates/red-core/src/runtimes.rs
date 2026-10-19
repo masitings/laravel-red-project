@@ -719,6 +719,11 @@ pub struct Marker {
     /// written before RED recorded it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    /// SHA-256 of the archive it came from, when the catalog published one,
+    /// so a rebuilt archive of the same version (e.g. now with Xdebug) is
+    /// offered as an update.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
 }
 
 /// The host part of `url`: `https://nodejs.org/dist/x` → `nodejs.org`.
@@ -731,24 +736,28 @@ pub fn url_host(url: &str) -> Option<String> {
 }
 
 /// The version to update an installed runtime to, if any: a newer patch on
-/// the same line, or, for PHP, RED's own build of the same version replacing
-/// a fallback build from elsewhere (RED's has more extensions).
+/// the same line, or RED's own build of the same version when the installed
+/// one came from elsewhere (a fallback PHP build has fewer extensions) or
+/// from an older build of it (RED rebuilt the archive, e.g. to add Xdebug).
 pub fn update_for(
     installed_version: &str,
     installed_source: Option<&str>,
+    installed_sha256: Option<&str>,
     release: &Release,
     red_builds_host: Option<&str>,
 ) -> Option<String> {
     match compare(&release.version, installed_version) {
         std::cmp::Ordering::Greater => Some(release.version.clone()),
         std::cmp::Ordering::Equal => {
-            let release_source = release.artifacts.first().and_then(|a| url_host(&a.url));
+            let artifact = release.artifacts.first();
+            let release_source = artifact.and_then(|a| url_host(&a.url));
             let is_red_build =
                 red_builds_host.is_some() && release_source.as_deref() == red_builds_host;
-            (release.kind == RuntimeKind::Php
-                && is_red_build
-                && installed_source != release_source.as_deref())
-            .then(|| release.version.clone())
+            let other_source = installed_source != release_source.as_deref();
+            let rebuilt = artifact
+                .and_then(|a| a.sha256.as_deref())
+                .is_some_and(|sum| installed_sha256 != Some(sum));
+            (is_red_build && (other_source || rebuilt)).then(|| release.version.clone())
         }
         std::cmp::Ordering::Less => None,
     }
@@ -990,7 +999,7 @@ mod tests {
             version: version.into(),
             artifacts: vec![Artifact {
                 url: url.into(),
-                sha256: None,
+                sha256: url.contains("github.com").then(|| "aa".repeat(32)),
                 sha256_url: None,
                 sha256_name: None,
                 format: Format::TarGz,
@@ -1002,12 +1011,25 @@ mod tests {
         let host = Some("github.com");
         // Newer patch.
         assert_eq!(
-            update_for("8.4.25", Some("github.com"), &release("8.4.26", red), host).as_deref(),
+            update_for(
+                "8.4.25",
+                Some("github.com"),
+                Some(&"aa".repeat(32)),
+                &release("8.4.26", red),
+                host
+            )
+            .as_deref(),
             Some("8.4.26")
         );
         // Same version, already RED's build.
         assert_eq!(
-            update_for("8.4.26", Some("github.com"), &release("8.4.26", red), host),
+            update_for(
+                "8.4.26",
+                Some("github.com"),
+                Some(&"aa".repeat(32)),
+                &release("8.4.26", red),
+                host
+            ),
             None
         );
         // Same version, but a fallback build: switch to RED's.
@@ -1015,6 +1037,7 @@ mod tests {
             update_for(
                 "8.4.26",
                 Some("dl.static-php.dev"),
+                Some(&"aa".repeat(32)),
                 &release("8.4.26", red),
                 host
             )
@@ -1022,23 +1045,72 @@ mod tests {
             Some("8.4.26")
         );
         assert_eq!(
-            update_for("8.4.26", None, &release("8.4.26", red), host).as_deref(),
+            update_for(
+                "8.4.26",
+                None,
+                Some(&"aa".repeat(32)),
+                &release("8.4.26", red),
+                host
+            )
+            .as_deref(),
             Some("8.4.26")
         );
         // Only a fallback build is available: nothing to switch to.
         assert_eq!(
-            update_for("8.4.26", None, &release("8.4.26", spc), host),
+            update_for(
+                "8.4.26",
+                None,
+                Some(&"aa".repeat(32)),
+                &release("8.4.26", spc),
+                host
+            ),
             None
         );
         // Older than installed.
         assert_eq!(
-            update_for("8.4.27", None, &release("8.4.26", red), host),
+            update_for(
+                "8.4.27",
+                None,
+                Some(&"aa".repeat(32)),
+                &release("8.4.26", red),
+                host
+            ),
             None
         );
         // RED builds turned off.
         assert_eq!(
-            update_for("8.4.26", None, &release("8.4.26", red), None),
+            update_for(
+                "8.4.26",
+                None,
+                Some(&"aa".repeat(32)),
+                &release("8.4.26", red),
+                None
+            ),
             None
+        );
+        // RED rebuilt the same version (new checksum): offer it.
+        assert_eq!(
+            update_for(
+                "8.4.26",
+                Some("github.com"),
+                Some(&"bb".repeat(32)),
+                &release("8.4.26", red),
+                host
+            )
+            .as_deref(),
+            Some("8.4.26")
+        );
+        // Installed before RED recorded checksums.
+        assert_eq!(
+            update_for(
+                "8.4.26",
+                Some("github.com"),
+                None,
+                &release("8.4.26", red),
+                host
+            )
+            .as_deref(),
+            Some("8.4.26")
         );
     }
 }

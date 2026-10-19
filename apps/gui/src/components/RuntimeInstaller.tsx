@@ -106,7 +106,7 @@ export function RuntimeInstaller({ kinds }: { kinds: RuntimeKind[] }) {
                       {!installed
                         ? "Install"
                         : update === installed.version
-                          ? "Switch to RED build"
+                          ? "Get new build"
                           : `Update to ${update}`}
                     </Button>
                   )

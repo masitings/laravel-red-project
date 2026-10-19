@@ -28,6 +28,10 @@ pub struct PhpInstall {
     pub full_version: String,
     /// The `php-fpm` binary.
     pub fpm: PathBuf,
+    /// `xdebug.so` to load into the on-demand debug pool, if there is one.
+    pub xdebug: Option<PathBuf>,
+    /// Xdebug is loaded by the installation's own ini (always on).
+    pub xdebug_loaded: bool,
 }
 
 /// Errors from starting or reaching a PHP-FPM pool.
@@ -43,6 +47,17 @@ pub enum FpmError {
 struct Pool {
     child: Child,
     socket: PathBuf,
+    /// Extra `-d` settings it was started with (Xdebug's).
+    settings: Vec<String>,
+}
+
+/// Pools are keyed by version, with a separate one per version for Xdebug.
+fn pool_key(version: &str, xdebug: bool) -> String {
+    if xdebug {
+        format!("{version}-xdebug")
+    } else {
+        version.to_owned()
+    }
 }
 
 /// Owns every PHP-FPM process RED starts.
@@ -77,10 +92,21 @@ impl PhpManager {
             if installs.iter().any(|i| i.version == version) {
                 continue;
             }
+            let cli = red_platform::binaries::php_cli_for_fpm(&fpm);
+            let xdebug = match cli {
+                Some(cli) => {
+                    tokio::task::spawn_blocking(move || red_platform::php::xdebug_for(&cli))
+                        .await
+                        .unwrap_or_default()
+                }
+                None => red_platform::php::Xdebug::default(),
+            };
             installs.push(PhpInstall {
                 version,
                 full_version,
                 fpm,
+                xdebug: xdebug.extension,
+                xdebug_loaded: xdebug.loaded_by_ini,
             });
         }
         installs.sort_by(|a, b| red_core::php::compare(&b.version, &a.version));
@@ -118,38 +144,86 @@ impl PhpManager {
     pub async fn running(&self) -> Vec<String> {
         let mut pools = self.pools.lock().await;
         pools.retain(|_, pool| matches!(pool.child.try_wait(), Ok(None)));
-        let mut versions: Vec<String> = pools.keys().cloned().collect();
+        let mut versions: Vec<String> = pools
+            .keys()
+            .filter(|key| !key.ends_with("-xdebug"))
+            .cloned()
+            .collect();
         versions.sort();
         versions
     }
 
     /// The FastCGI socket for `version`, starting its pool if needed.
     pub async fn socket(&self, version: &str) -> Result<PathBuf, FpmError> {
+        self.socket_with(version, None).await
+    }
+
+    /// The socket of `version`'s pool, or with `xdebug` settings, of its
+    /// Xdebug pool (restarted when the settings changed).
+    pub async fn socket_with(
+        &self,
+        version: &str,
+        xdebug: Option<&[String]>,
+    ) -> Result<PathBuf, FpmError> {
+        let key = pool_key(version, xdebug.is_some());
+        let settings = xdebug.unwrap_or_default();
         let mut pools = self.pools.lock().await;
-        if let Some(pool) = pools.get_mut(version) {
-            if matches!(pool.child.try_wait(), Ok(None)) && pool.socket.exists() {
+        if let Some(pool) = pools.get_mut(&key) {
+            let alive = matches!(pool.child.try_wait(), Ok(None)) && pool.socket.exists();
+            if alive && pool.settings == settings {
                 return Ok(pool.socket.clone());
             }
-            tracing::warn!(version, "PHP-FPM pool exited; starting it again");
-            pools.remove(version);
+            if alive {
+                tracing::info!(pool = %key, "Xdebug settings changed; restarting the pool");
+            } else {
+                tracing::warn!(pool = %key, "PHP-FPM pool exited; starting it again");
+            }
+            if let Some(pool) = pools.remove(&key) {
+                stop(pool).await;
+            }
         }
         let install = self
             .find(version)
             .ok_or_else(|| FpmError::NotInstalled(version.to_owned()))?;
-        let pool = self.spawn(&install).await?;
+        let pool = self.spawn(&install, &key, settings).await?;
         let socket = pool.socket.clone();
-        pools.insert(version.to_owned(), pool);
+        pools.insert(key, pool);
         self.notify();
         Ok(socket)
     }
 
-    /// Stop the pool for `version`; the next request starts a fresh one.
+    /// Stop the pools for `version` (with and without Xdebug); the next
+    /// request starts fresh ones.
     pub async fn restart(&self, version: &str) {
-        let pool = self.pools.lock().await.remove(version);
-        if let Some(pool) = pool {
-            tracing::info!(version, "restarting PHP-FPM pool");
-            stop(pool).await;
+        let removed: Vec<Pool> = {
+            let mut pools = self.pools.lock().await;
+            [pool_key(version, false), pool_key(version, true)]
+                .iter()
+                .filter_map(|key| pools.remove(key))
+                .collect()
+        };
+        if !removed.is_empty() {
+            tracing::info!(version, "restarting PHP-FPM pools");
+            for pool in removed {
+                stop(pool).await;
+            }
             self.notify();
+        }
+    }
+
+    /// Stop every Xdebug pool (Xdebug was switched off).
+    pub async fn stop_xdebug_pools(&self) {
+        let removed: Vec<Pool> = {
+            let mut pools = self.pools.lock().await;
+            let keys: Vec<String> = pools
+                .keys()
+                .filter(|k| k.ends_with("-xdebug"))
+                .cloned()
+                .collect();
+            keys.iter().filter_map(|k| pools.remove(k)).collect()
+        };
+        for pool in removed {
+            stop(pool).await;
         }
     }
 
@@ -165,15 +239,25 @@ impl PhpManager {
         let _ = self.events.send(red_api::Event::PhpChanged);
     }
 
-    async fn spawn(&self, install: &PhpInstall) -> Result<Pool, FpmError> {
+    async fn spawn(
+        &self,
+        install: &PhpInstall,
+        key: &str,
+        settings: &[String],
+    ) -> Result<Pool, FpmError> {
         let version = &install.version;
         let fail = |reason: String| FpmError::Start {
             version: version.clone(),
             reason,
         };
-        let dir = self.paths.php_dir(version);
-        let socket = self.paths.php_socket(version);
-        let log = self.paths.log_dir.join(format!("php{version}-fpm.log"));
+        let dir = self.paths.php_dir(key);
+        let socket = self.paths.php_socket(key);
+        let log = self.paths.log_dir.join(format!("php{key}-fpm.log"));
+        for setting in settings {
+            if let Some(out) = setting.strip_prefix("xdebug.output_dir=") {
+                let _ = std::fs::create_dir_all(out);
+            }
+        }
         for d in [&dir, &self.paths.log_dir, &self.paths.run_dir] {
             std::fs::create_dir_all(d).map_err(|e| fail(format!("create {}: {e}", d.display())))?;
         }
@@ -186,6 +270,9 @@ impl PhpManager {
         command.arg("--nodaemonize").arg("--fpm-config").arg(&conf);
         if let Some(ini) = red_platform::binaries::php_ini_for(&install.fpm) {
             command.arg("-c").arg(ini);
+        }
+        for setting in settings {
+            command.arg("-d").arg(setting);
         }
         if red_platform::user::is_root() {
             command.arg("--allow-to-run-as-root");
@@ -201,8 +288,12 @@ impl PhpManager {
         let deadline = tokio::time::Instant::now() + START_TIMEOUT;
         loop {
             if socket.exists() {
-                tracing::info!(version, pid = child.id(), "PHP-FPM pool started");
-                return Ok(Pool { child, socket });
+                tracing::info!(pool = key, pid = child.id(), "PHP-FPM pool started");
+                return Ok(Pool {
+                    child,
+                    socket,
+                    settings: settings.to_vec(),
+                });
             }
             if let Ok(Some(status)) = child.try_wait() {
                 return Err(fail(format!(

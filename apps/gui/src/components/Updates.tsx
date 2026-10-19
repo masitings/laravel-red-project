@@ -197,7 +197,7 @@ function RuntimeUpdates() {
             </span>
             <span className="font-mono text-xs leading-5 text-stone-600 dark:text-stone-400">
               {runtime.version} → {runtime.update}
-              {runtime.update === runtime.version && " (RED build)"}
+              {runtime.update === runtime.version && " (new build)"}
             </span>
           </li>
         ))}

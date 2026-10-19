@@ -30,6 +30,8 @@ pub mod endpoints {
     pub const PHP: &str = "/v1/php";
     /// `PUT`: change the default PHP version.
     pub const PHP_DEFAULT: &str = "/v1/php/default";
+    /// `PUT`: when sites run with Xdebug, see [`crate::XdebugRequest`].
+    pub const XDEBUG: &str = "/v1/xdebug";
     /// `GET`: health checks, see [`crate::DoctorReport`].
     pub const DOCTOR: &str = "/v1/doctor";
     /// `POST`: install the resolver file through the helper. `DELETE`: remove it.

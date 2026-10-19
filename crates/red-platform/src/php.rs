@@ -63,6 +63,58 @@ pub fn fpm_candidates(data_dir: &Path) -> Vec<PathBuf> {
     found
 }
 
+/// Where Xdebug is for a PHP installation.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Xdebug {
+    /// `xdebug.so` that can be loaded with `-d zend_extension=...`.
+    pub extension: Option<PathBuf>,
+    /// Xdebug is already loaded by the installation's own `php.ini`
+    /// (`pecl install xdebug`, `php-xdebug` packages), so it always runs.
+    pub loaded_by_ini: bool,
+}
+
+/// Find Xdebug for the PHP whose CLI binary is `php`. RED's own builds keep
+/// it at `<root>/lib/xdebug.so`; other installations are asked for their
+/// `extension_dir`.
+pub fn xdebug_for(php: &Path) -> Xdebug {
+    if crate::binaries::php_ini_for(php).is_some() {
+        let extension = php
+            .parent()
+            .and_then(Path::parent)
+            .map(|root| root.join("lib").join("xdebug.so"))
+            .filter(|p| p.is_file());
+        return Xdebug {
+            extension,
+            loaded_by_ini: false,
+        };
+    }
+    let Ok(output) = std::process::Command::new(php)
+        .args([
+            "-r",
+            "echo ini_get('extension_dir'), PHP_EOL, extension_loaded('xdebug') ? 1 : 0, PHP_EOL;",
+        ])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+    else {
+        return Xdebug::default();
+    };
+    parse_probe(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn parse_probe(output: &str) -> Xdebug {
+    let mut lines = output.lines();
+    let extension_dir = lines.next().unwrap_or_default().trim();
+    let loaded_by_ini = lines.next().is_some_and(|l| l.trim() == "1");
+    let extension = (!extension_dir.is_empty())
+        .then(|| Path::new(extension_dir).join("xdebug.so"))
+        .filter(|p| p.is_file());
+    Xdebug {
+        extension,
+        loaded_by_ini,
+    }
+}
+
 fn sorted_dirs(dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
@@ -96,5 +148,32 @@ mod tests {
                 .iter()
                 .any(|p| p.starts_with(data.path().join("runtimes/php/8.2")))
         );
+    }
+
+    #[test]
+    fn finds_xdebug_next_to_reds_php() {
+        let root = tempfile::tempdir().unwrap();
+        for dir in ["bin", "etc", "lib"] {
+            std::fs::create_dir_all(root.path().join(dir)).unwrap();
+        }
+        let php = root.path().join("bin/php");
+        std::fs::write(&php, "").unwrap();
+        std::fs::write(root.path().join("etc/php.ini"), "").unwrap();
+        assert_eq!(xdebug_for(&php).extension, None);
+        std::fs::write(root.path().join("lib/xdebug.so"), "").unwrap();
+        let found = xdebug_for(&php);
+        assert_eq!(found.extension, Some(root.path().join("lib/xdebug.so")));
+        assert!(!found.loaded_by_ini);
+    }
+
+    #[test]
+    fn reads_extension_dir_probes() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("xdebug.so"), "").unwrap();
+        let probe = parse_probe(&format!("{}\n1\n", dir.path().display()));
+        assert_eq!(probe.extension, Some(dir.path().join("xdebug.so")));
+        assert!(probe.loaded_by_ini);
+        assert_eq!(parse_probe("/nowhere\n0\n"), Xdebug::default());
+        assert_eq!(parse_probe(""), Xdebug::default());
     }
 }

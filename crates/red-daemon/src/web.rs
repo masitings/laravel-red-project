@@ -304,10 +304,12 @@ async fn run_php(
         params.extend(crate::dumps::fastcgi_params(*port));
     }
 
+    let xdebug = xdebug_settings(app, version, &parts);
+
     let mut attempt = 0;
     loop {
         attempt += 1;
-        let socket = match app.php.socket(version).await {
+        let socket = match app.php.socket_with(version, xdebug.as_deref()).await {
             Ok(socket) => socket,
             Err(err) => {
                 return page(
@@ -323,7 +325,13 @@ async fn run_php(
                 if !response.stderr.is_empty() {
                     tracing::warn!(site = %site.name, stderr = %response.stderr.trim_end(), "PHP stderr");
                 }
-                return php_response(response);
+                let mut response = php_response(response);
+                if xdebug.is_some() {
+                    response
+                        .headers_mut()
+                        .insert("x-red-xdebug", hyper::header::HeaderValue::from_static("1"));
+                }
+                return response;
             }
             Err(FcgiError::Connect { .. }) if attempt == 1 => {
                 tracing::warn!(
@@ -345,6 +353,40 @@ async fn run_php(
             }
         }
     }
+}
+
+/// Xdebug settings when this request should run in `version`'s Xdebug
+/// pool: Xdebug is `on`, or `auto` and the request carries a trigger.
+fn xdebug_settings(
+    app: &AppState,
+    version: &str,
+    parts: &hyper::http::request::Parts,
+) -> Option<Vec<String>> {
+    use red_core::xdebug::{XdebugMode, has_trigger, ini_settings};
+    let mode = app.state.read().expect("state lock poisoned").xdebug;
+    if mode == XdebugMode::Off {
+        return None;
+    }
+    let install = app.php.find(version)?;
+    if install.xdebug_loaded {
+        // Already in the normal pool through the installation's php.ini.
+        return None;
+    }
+    let extension = install.xdebug?;
+    let cookies = parts
+        .headers
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok());
+    let wanted = mode == XdebugMode::On || has_trigger(cookies, parts.uri.query());
+    wanted.then(|| {
+        ini_settings(
+            &extension,
+            mode,
+            &app.paths.log_dir.join("xdebug"),
+            app.config.xdebug_port,
+        )
+    })
 }
 
 fn cgi_params(
