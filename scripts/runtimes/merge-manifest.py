@@ -4,11 +4,17 @@
     merge-manifest.py manifest.json <base-url> entries/*.json
 
 Each entry file holds one JSON object written by build-php.sh or
-build-valkey.sh. An entry replaces any older one with the same kind, line
-and platform. The result is written back to manifest.json.
+build-valkey.sh. An entry replaces the one with the same kind, line and
+platform, unless that one is a newer version (a build that picked up an
+older source must not downgrade the manifest). The result is written back to manifest.json.
 """
 import json
+import re
 import sys
+
+
+def version_key(version: str) -> list[int]:
+    return [int(p) for p in re.findall(r"\d+", version)]
 
 
 def main() -> None:
@@ -25,7 +31,11 @@ def main() -> None:
             entry = json.load(f)
         entry["url"] = f"{base_url.rstrip('/')}/{entry.pop('file')}"
         key = (entry["kind"], entry["line"], entry["platform"])
-        runtimes = [r for r in runtimes if (r["kind"], r["line"], r["platform"]) != key]
+        current = next((r for r in runtimes if (r["kind"], r["line"], r["platform"]) == key), None)
+        if current and version_key(current["version"]) > version_key(entry["version"]):
+            print(f"{entry['kind']} {entry['version']} {entry['platform']}: keeping {current['version']}")
+            continue
+        runtimes = [r for r in runtimes if r is not current]
         runtimes.append(entry)
         print(f"{entry['kind']} {entry['version']} {entry['platform']}")
 
