@@ -10,6 +10,11 @@ pub const HELPER_LABEL: &str = "dev.redproject.helper";
 /// launchd label of the per-user daemon.
 pub const AGENT_LABEL: &str = "dev.redproject.redd";
 
+/// File the desktop AppImage leaves in `~/.local/bin` next to the copies of
+/// red, redd and red-helper it made, so it can refresh them and
+/// `red uninstall` can remove them.
+pub const APPIMAGE_MARKER: &str = ".red-appimage";
+
 /// Where the helper binary is installed.
 pub fn helper_binary() -> PathBuf {
     if cfg!(target_os = "macos") {

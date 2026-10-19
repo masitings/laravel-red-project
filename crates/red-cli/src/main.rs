@@ -18,6 +18,7 @@ mod runtimes;
 mod services;
 mod system;
 mod tools;
+mod uninstall;
 
 /// red: local PHP development environment.
 #[derive(Debug, Parser)]
@@ -157,6 +158,16 @@ enum Command {
     Doctor,
     /// One-time setup: helper, autostart, DNS and CA trust.
     Setup,
+    /// Undo `red setup`: DNS, CA trust, autostart, the helper and the
+    /// commands in ~/.local/bin. Project folders are never touched.
+    Uninstall {
+        /// Also delete RED's data: runtimes, databases, mail, certificates, logs.
+        #[arg(long)]
+        purge: bool,
+        /// Do not ask for confirmation.
+        #[arg(long, short)]
+        yes: bool,
+    },
     /// Point the OS at RED's DNS responder for the local TLD (uses sudo).
     #[command(name = "dns:install")]
     DnsInstall,
@@ -656,6 +667,7 @@ async fn run(cli: &Cli) -> anyhow::Result<()> {
                 std::process::exit(1);
             }
         }
+        Command::Uninstall { purge, yes } => uninstall::run(&ctx, &paths, *purge, *yes).await?,
         Command::Setup => {
             println!("Setting up RED. You may be asked for your password a few times.\n");
             println!("1/4  Privileged helper (ports 80 and 443)");
@@ -1001,6 +1013,7 @@ mod tests {
         assert!(Cli::try_parse_from(["red", "php:install", "8.3"]).is_ok());
         assert!(Cli::try_parse_from(["red", "runtimes:install", "postgres", "17"]).is_ok());
         assert!(Cli::try_parse_from(["red", "runtimes:update"]).is_ok());
+        assert!(Cli::try_parse_from(["red", "uninstall", "--purge", "-y"]).is_ok());
         assert!(Cli::try_parse_from(["red", "runtimes:update", "php", "8.4"]).is_ok());
         assert!(Cli::try_parse_from(["red", "use", "8.4"]).is_ok());
         assert!(Cli::try_parse_from(["red", "--version"]).is_err()); // prints version

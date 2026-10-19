@@ -72,6 +72,16 @@ doctor checks and its own packages.
   See `docs/releasing.md`.
 
 ### Other
+- `red uninstall` undoes `red setup` in one go: the resolver file, CA trust
+  (keychain, or the Linux system store and browser databases), starting at
+  login (stopping redd and its services, also when started by hand), the
+  helper and RED's commands in `~/.local/bin`. `--purge` also deletes RED's
+  data; project folders are never touched. It carries on past steps that
+  fail and lists them at the end.
+- The app's "Install the red command" copies red, redd and red-helper into
+  `~/.local/bin` when it runs as an AppImage (whose files move on every
+  launch) and refreshes the copies when it starts; elsewhere it still links
+  to the app.
 - `red restart` restarts redd through its login agent (after installing a
   new version, for example).
 - When port 80 or 443 is taken (Herd, Valet, another server), redd serves

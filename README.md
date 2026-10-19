@@ -73,6 +73,16 @@ command-line archive, then run `red setup` as above. On Linux:
 
 `red doctor` checks each of these.
 
+### Uninstall
+
+```sh
+red uninstall           # DNS, CA trust, start at login, helper, ~/.local/bin commands
+red uninstall --purge   # …and RED's data: runtimes, databases, mail, certificates, logs
+```
+
+Your project folders are never touched. Then move RED.app to the Trash,
+or remove the package (`brew uninstall red`, `sudo apt remove red`).
+
 ## Usage
 
 ```sh

@@ -38,6 +38,7 @@ pub fn run() {
                 app.handle()
                     .plugin(tauri_plugin_updater::Builder::new().build())?;
             }
+            commands::refresh_appimage_cli();
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(relay_events(handle));
             Ok(())

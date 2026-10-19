@@ -23,6 +23,19 @@ pub(crate) fn run(program: &str, args: &[&str]) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Like [`run`], without the command's standard output.
+fn run_quiet(program: &str, args: &[&str]) -> anyhow::Result<()> {
+    let status = Command::new(program)
+        .args(args)
+        .stdout(Stdio::null())
+        .status()
+        .with_context(|| format!("could not run {program}"))?;
+    if !status.success() {
+        bail!("`{program} {}` failed ({status})", args.join(" "));
+    }
+    Ok(())
+}
+
 fn has_tool(name: &str) -> bool {
     !in_path(name).is_empty()
 }
@@ -200,7 +213,9 @@ pub fn untrust(ca: &Path) -> anyhow::Result<()> {
                 "sudo",
                 &["rm", "-f", &dir.join(ANCHOR_FILE).display().to_string()],
             )?;
-            run("sudo", &["update-ca-certificates", "--fresh"])?;
+            // --fresh also drops the symlinks to the removed file; it lists
+            // every certificate, so keep it quiet.
+            run_quiet("sudo", &["update-ca-certificates", "--fresh"])?;
         }
         Some(SystemStore::P11Kit) => {
             run(

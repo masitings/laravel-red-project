@@ -223,7 +223,9 @@ pub fn cli_status() -> CliStatus {
     }
 }
 
-/// Link the bundled `red` into `~/.local/bin`.
+/// Put the bundled `red` on `PATH` in `~/.local/bin`: a symlink into the app
+/// bundle, or, for an AppImage (whose files move on every launch), copies
+/// of red, redd and red-helper that the app refreshes when it starts.
 #[tauri::command]
 pub fn install_cli() -> Result<String, CommandError> {
     let source = bundled("red").ok_or_else(|| {
@@ -234,15 +236,19 @@ pub fn install_cli() -> Result<String, CommandError> {
     })?;
     let target = home_bin("red")
         .ok_or_else(|| CommandError::new("internal", "cannot find the home directory"))?;
-    if let Some(dir) = target.parent() {
-        std::fs::create_dir_all(dir)
-            .map_err(|err| CommandError::new("internal", err.to_string()))?;
-    }
+    let bin_dir = target
+        .parent()
+        .ok_or_else(|| CommandError::new("internal", "bad target"))?
+        .to_path_buf();
+    std::fs::create_dir_all(&bin_dir)
+        .map_err(|err| CommandError::new("internal", err.to_string()))?;
+    let appimage = std::env::var_os("APPIMAGE").is_some();
     match std::fs::symlink_metadata(&target) {
         Ok(meta) if meta.file_type().is_symlink() => {
             std::fs::remove_file(&target)
                 .map_err(|err| CommandError::new("internal", err.to_string()))?;
         }
+        Ok(_) if appimage && bin_dir.join(APPIMAGE_MARKER).exists() => {}
         Ok(_) => {
             return Err(CommandError {
                 hint: Some("Remove it first if you want the app's copy instead.".into()),
@@ -251,9 +257,58 @@ pub fn install_cli() -> Result<String, CommandError> {
         }
         Err(_) => {}
     }
-    std::os::unix::fs::symlink(&source, &target)
-        .map_err(|err| CommandError::new("internal", err.to_string()))?;
+    if appimage {
+        let dir = source
+            .parent()
+            .ok_or_else(|| CommandError::new("internal", "bad source"))?;
+        copy_binaries(dir, &bin_dir)
+            .map_err(|err| CommandError::new("internal", err.to_string()))?;
+    } else {
+        std::os::unix::fs::symlink(&source, &target)
+            .map_err(|err| CommandError::new("internal", err.to_string()))?;
+    }
     Ok(target.display().to_string())
+}
+
+use red_platform::services::APPIMAGE_MARKER;
+
+const BINARIES: [&str; 3] = ["red", "redd", "red-helper"];
+
+/// Copy RED's binaries from `from` into `to`, replacing each through a
+/// rename so a running redd keeps its old file, and leave the marker.
+fn copy_binaries(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    for name in BINARIES {
+        let source = from.join(name);
+        if !source.is_file() {
+            continue;
+        }
+        let temp = to.join(format!(".{name}.new"));
+        std::fs::copy(&source, &temp)?;
+        std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o755))?;
+        std::fs::rename(&temp, to.join(name))?;
+    }
+    std::fs::write(
+        to.join(APPIMAGE_MARKER),
+        "Copied by the RED AppImage; refreshed when it starts. `red uninstall` removes these.\n",
+    )
+}
+
+/// When running as an AppImage that installed the command before, refresh
+/// the copies so they match this (possibly updated) version.
+pub fn refresh_appimage_cli() {
+    if std::env::var_os("APPIMAGE").is_none() {
+        return;
+    }
+    let (Some(source), Some(target)) = (bundled("red"), home_bin("red")) else {
+        return;
+    };
+    let (Some(from), Some(to)) = (source.parent(), target.parent()) else {
+        return;
+    };
+    if to.join(APPIMAGE_MARKER).exists() {
+        let _ = copy_binaries(from, to);
+    }
 }
 
 fn bundled(name: &str) -> Option<std::path::PathBuf> {
@@ -301,6 +356,23 @@ mod tests {
         assert_eq!(err.code, "bad_request");
         let err = save(&state, "/v1/mail/../status", &dest).await.unwrap_err();
         assert_eq!(err.code, "bad_request");
+    }
+
+    #[test]
+    fn copies_binaries_with_a_marker() {
+        let from = tempfile::tempdir().unwrap();
+        let to = tempfile::tempdir().unwrap();
+        for name in BINARIES {
+            std::fs::write(from.path().join(name), name).unwrap();
+        }
+        std::fs::write(to.path().join("redd"), "old").unwrap();
+        copy_binaries(from.path(), to.path()).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(to.path().join("redd")).unwrap(),
+            "redd"
+        );
+        assert!(to.path().join(APPIMAGE_MARKER).is_file());
+        assert!(!to.path().join(".red.new").exists());
     }
 
     #[tokio::test]
