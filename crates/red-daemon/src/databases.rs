@@ -42,11 +42,31 @@ pub struct Tools {
     dump: PathBuf,
 }
 
+/// Why a client tool is missing, and how to get it.
+pub(crate) fn missing_client(kind: ServiceKind, tool: &str, server: &Path) -> String {
+    let fix = match kind {
+        ServiceKind::Postgres => {
+            "RED's own PostgreSQL builds include it: `red runtimes:update postgres`, then \
+             restart the service. Or install the client tools: `brew install libpq` (macOS), \
+             `sudo apt install postgresql-client` (Debian/Ubuntu)."
+        }
+        ServiceKind::Mysql => {
+            "Install the client tools: `brew install mysql-client` (macOS), \
+             `sudo apt install mariadb-client` (Debian/Ubuntu)."
+        }
+        ServiceKind::Redis => "",
+    };
+    format!(
+        "{tool} was not found next to {} or on this computer. {fix}",
+        server.display()
+    )
+}
+
 impl Tools {
     pub fn for_service(config: &ServiceConfig) -> Result<Self, String> {
         let find = |names: &[&str], what: &str| {
-            red_platform::binaries::companion(&config.binary, names)
-                .ok_or_else(|| format!("{what} was not found next to {}", config.binary.display()))
+            red_platform::binaries::client_tool(&config.binary, names)
+                .ok_or_else(|| missing_client(config.kind, what, &config.binary))
         };
         let (client, dump) = match config.kind {
             ServiceKind::Mysql => (

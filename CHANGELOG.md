@@ -130,6 +130,21 @@ All notable changes to RED Project. The format follows
   workflow), MariaDB's official tarballs on Linux x86_64.
   `red services:add mariadb` uses it.
 
+### PostgreSQL
+- RED builds PostgreSQL itself (new `build-postgres.sh` and a PostgreSQL job
+  in the Runtimes workflow, majors 16–18 for macOS and Linux on arm64 and
+  x86-64): server, `psql`, `pg_dump`, `pg_restore` and the contrib
+  extensions, relocatable, linking only system libraries. zonky's
+  server-only builds remain the fallback for majors RED has not built.
+- A PostgreSQL installed from zonky is offered RED's build of the same
+  version as an update (`red runtimes:update postgres`), since it lacks the
+  client tools `red db` and `red new --db postgres` need. Versions now
+  compare equal regardless of trailing zeros (`17.6` = `17.6.0`).
+- Database commands look for client tools outside the server's directory
+  too (Homebrew's keg-only `libpq` and `mysql-client`, Postgres.app,
+  Debian's `/usr/lib/postgresql/<major>/bin`), and say how to get them when
+  none is found.
+
 ### Doctor
 - Doctor checks carry a fix action. `red doctor --fix` and the app's Fix /
   Fix all buttons install the helper, the resolver, trust the CA, install

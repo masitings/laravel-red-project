@@ -118,6 +118,53 @@ pub fn companion(server_binary: &Path, names: &[&str]) -> Option<PathBuf> {
         .find_map(|name| in_path(name).into_iter().next())
 }
 
+/// Where database client tools live when they did not come with the server:
+/// Homebrew's keg-only `libpq` and `mysql-client`, Postgres.app, and
+/// Homebrew's bin directories (redd's `PATH` at login is short).
+const CLIENT_DIRS: &[&str] = &[
+    "/opt/homebrew/opt/libpq/bin",
+    "/usr/local/opt/libpq/bin",
+    "/Applications/Postgres.app/Contents/Versions/latest/bin",
+    "/opt/homebrew/opt/mysql-client/bin",
+    "/usr/local/opt/mysql-client/bin",
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+];
+
+/// A database client tool (`psql`, `pg_dump`, `mysql`, ...) for a server:
+/// the one shipped with it (see [`companion`]), else one installed apart from
+/// it, newest Debian PostgreSQL first (`/usr/lib/postgresql/<major>/bin`).
+pub fn client_tool(server_binary: &Path, names: &[&str]) -> Option<PathBuf> {
+    let mut dirs: Vec<PathBuf> = CLIENT_DIRS.iter().map(PathBuf::from).collect();
+    dirs.extend(debian_postgres_bins(Path::new("/usr/lib/postgresql")));
+    client_tool_in(server_binary, names, &dirs)
+}
+
+fn client_tool_in(server_binary: &Path, names: &[&str], dirs: &[PathBuf]) -> Option<PathBuf> {
+    companion(server_binary, names).or_else(|| {
+        names.iter().find_map(|name| {
+            dirs.iter()
+                .map(|dir| dir.join(name))
+                .find(|path| path.is_file())
+        })
+    })
+}
+
+/// `<root>/<major>/bin` directories, newest major first.
+fn debian_postgres_bins(root: &Path) -> Vec<PathBuf> {
+    let mut majors: Vec<(u64, PathBuf)> = std::fs::read_dir(root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let major = entry.file_name().to_str()?.parse::<u64>().ok()?;
+            Some((major, entry.path().join("bin")))
+        })
+        .collect();
+    majors.sort_by_key(|(major, _)| std::cmp::Reverse(*major));
+    majors.into_iter().map(|(_, dir)| dir).collect()
+}
+
 /// The `php` CLI binary that belongs to a `php-fpm` binary: `../bin/php`
 /// for Homebrew and RED runtimes (`sbin/php-fpm`), `php8.3` next to
 /// `php-fpm8.3` on Debian.
@@ -306,6 +353,36 @@ mod tests {
             Some(ini)
         );
         assert_eq!(php_ini_for(Path::new("/usr/sbin/php-fpm8.3")), None);
+    }
+
+    #[test]
+    fn finds_client_tools_apart_from_the_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = dir.path().join("pg/bin/postgres");
+        std::fs::create_dir_all(server.parent().unwrap()).unwrap();
+        std::fs::write(&server, "").unwrap();
+        let libpq = dir.path().join("libpq/bin");
+        std::fs::create_dir_all(&libpq).unwrap();
+        std::fs::write(libpq.join("red-test-psql"), "").unwrap();
+        assert_eq!(
+            client_tool_in(&server, &["red-test-psql"], std::slice::from_ref(&libpq)),
+            Some(libpq.join("red-test-psql"))
+        );
+        // Next to the server wins.
+        std::fs::write(server.with_file_name("red-test-psql"), "").unwrap();
+        assert_eq!(
+            client_tool_in(&server, &["red-test-psql"], &[libpq]),
+            Some(server.with_file_name("red-test-psql"))
+        );
+
+        let debian = dir.path().join("postgresql");
+        for major in ["15", "17", "notes"] {
+            std::fs::create_dir_all(debian.join(major)).unwrap();
+        }
+        assert_eq!(
+            debian_postgres_bins(&debian),
+            [debian.join("17/bin"), debian.join("15/bin")]
+        );
     }
 
     #[test]

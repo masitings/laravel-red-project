@@ -178,7 +178,12 @@ red db:drop shop                # asks you to type the name
 ```
 
 `--service` picks the service when there is more than one. The app's
-Databases page does the same, with the list of backups.
+Databases page does the same, with the list of backups. These commands use
+the server's own client tools (`psql`, `pg_dump`, `mysql`, `mysqldump`),
+falling back to ones installed elsewhere (Homebrew's `libpq` or
+`mysql-client`, Postgres.app). RED's PostgreSQL builds include the
+extensions Laravel apps tend to use (`uuid-ossp`, `pg_trgm`, `hstore`,
+`citext`, `postgres_fdw`, …); pgcrypto needs OpenSSL and is not included.
 
 ### Sharing a site
 
@@ -317,7 +322,7 @@ static sites.
 | PHP | Built by RED's [Runtimes workflow](.github/workflows/runtimes.yml) with static-php-cli; static-php-cli's own builds for versions RED has not built yet |
 | Valkey | Built by RED's Runtimes workflow |
 | MariaDB | Built by RED's Runtimes workflow (macOS, Linux arm64); MariaDB's official tarballs on Linux x86_64 |
-| PostgreSQL | zonky's relocatable builds on Maven Central (SHA-256 checked) |
+| PostgreSQL | Built by RED's Runtimes workflow, with `psql`, `pg_dump` and the contrib extensions; zonky's server-only builds on Maven Central for majors RED has not built (SHA-256 checked) |
 | MySQL | Oracle's official tarballs (checksums pinned in RED) |
 | Node.js | nodejs.org (SHA-256 checked) |
 | Composer | getcomposer.org (SHA-256 checked) |

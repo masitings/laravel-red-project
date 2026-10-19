@@ -1,6 +1,6 @@
 name: Runtimes
 
-# Builds RED's own PHP, Valkey and MariaDB runtimes and publishes them, with
+# Builds RED's own PHP, Valkey, MariaDB and PostgreSQL runtimes and publishes them, with
 # manifest.json, on the rolling `runtimes` release. RED reads
 # https://github.com/<repo>/releases/download/runtimes/manifest.json.
 
@@ -17,6 +17,9 @@ on:
       mariadb_lines:
         description: MariaDB series to build for macOS and Linux arm64 (space separated, empty for none)
         default: "11.4 11.8"
+      postgres_majors:
+        description: PostgreSQL majors to build (space separated, empty for none)
+        default: "16 17 18"
   schedule:
     # Mondays: pick up new PHP and Valkey patch releases.
     - cron: "17 3 * * 1"
@@ -36,6 +39,7 @@ jobs:
       php: ${{ steps.plan.outputs.php }}
       valkey: ${{ steps.plan.outputs.valkey }}
       mariadb: ${{ steps.plan.outputs.mariadb }}
+      postgres: ${{ steps.plan.outputs.postgres }}
     steps:
       - uses: actions/checkout@v4
       - id: plan
@@ -43,6 +47,7 @@ jobs:
           PHP_LINES: ${{ github.event_name == 'schedule' && '8.1 8.2 8.3 8.4 8.5' || inputs.php_lines }}
           BUILD_VALKEY: ${{ github.event_name == 'schedule' || inputs.valkey }}
           MARIADB_LINES: ${{ github.event_name == 'schedule' && '11.4 11.8' || inputs.mariadb_lines }}
+          POSTGRES_MAJORS: ${{ github.event_name == 'schedule' && '16 17 18' || inputs.postgres_majors }}
           MANIFEST_URL: https://github.com/${{ github.repository }}/releases/download/runtimes/manifest.json
         run: |
           # shellcheck disable=SC2086 # the lists are space separated on purpose
@@ -60,6 +65,9 @@ jobs:
           # shellcheck disable=SC2086
           mariadb=$(python3 scripts/runtimes/plan-mariadb.py manifest.json $MARIADB_LINES)
           echo "mariadb=$mariadb" >> "$GITHUB_OUTPUT"
+          # shellcheck disable=SC2086
+          postgres=$(python3 scripts/runtimes/plan-postgres.py manifest.json $POSTGRES_MAJORS)
+          echo "postgres=$postgres" >> "$GITHUB_OUTPUT"
 
   php:
     name: PHP ${{ matrix.line }} (${{ matrix.platform }})
@@ -156,9 +164,38 @@ jobs:
           name: mariadb-${{ matrix.version }}-${{ matrix.platform }}
           path: out/*
 
+  postgres:
+    name: PostgreSQL ${{ matrix.version }} (${{ matrix.platform }})
+    needs: plan
+    if: needs.plan.outputs.postgres != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJSON(needs.plan.outputs.postgres) }}
+        platform: [macos-aarch64, macos-x86_64, linux-aarch64, linux-x86_64]
+        include:
+          - platform: macos-aarch64
+            runner: macos-15
+          - platform: macos-x86_64
+            runner: macos-15-intel
+          - platform: linux-aarch64
+            runner: ubuntu-22.04-arm
+          - platform: linux-x86_64
+            runner: ubuntu-22.04
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: scripts/runtimes/build-postgres.sh "${{ matrix.version }}" "${{ matrix.platform }}" out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: postgres-${{ matrix.version }}-${{ matrix.platform }}
+          path: out/*
+
   publish:
     name: Publish
-    needs: [php, valkey, mariadb]
+    needs: [php, valkey, mariadb, postgres]
     # Publish whatever built, even when some builds failed.
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
@@ -175,7 +212,7 @@ jobs:
         run: |
           gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" \
             --title "Runtimes" --prerelease \
-            --notes "PHP, Valkey and MariaDB builds used by RED (\`red php:install\`, \`red runtimes:install valkey\`, \`red runtimes:install mariadb\`). Updated by the Runtimes workflow; see manifest.json."
+            --notes "PHP, Valkey, MariaDB and PostgreSQL builds used by RED (\`red php:install\`, \`red runtimes:install valkey\`, \`red runtimes:install mariadb\`, \`red runtimes:install postgres\`). Updated by the Runtimes workflow; see manifest.json."
       - name: Merge the manifest
         run: |
           shopt -s nullglob

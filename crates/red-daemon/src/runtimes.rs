@@ -357,7 +357,9 @@ impl RuntimeManager {
                 push(RuntimeKind::Mysql, release.line, release.version);
             }
         }
-        for (line, version) in runtimes::pg_lines(&catalog.postgres) {
+        for (line, version) in
+            runtimes::pg_lines_from(&catalog.manifest, &catalog.postgres, platform)
+        {
             push(RuntimeKind::Postgres, line, version);
         }
         for (line, version) in catalog.manifest.lines(RuntimeKind::Valkey, platform) {
@@ -410,7 +412,9 @@ impl RuntimeManager {
                 runtimes::php_release_from(&catalog.manifest, &catalog.php, wanted, platform)
             }
             RuntimeKind::Mysql => runtimes::mysql_release(wanted, platform),
-            RuntimeKind::Postgres => runtimes::pg_release(&catalog.postgres, wanted, platform),
+            RuntimeKind::Postgres => {
+                runtimes::pg_release_from(&catalog.manifest, &catalog.postgres, wanted, platform)
+            }
             RuntimeKind::Valkey => catalog
                 .manifest
                 .release(RuntimeKind::Valkey, wanted, platform),

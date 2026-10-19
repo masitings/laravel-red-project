@@ -22,7 +22,8 @@ if [[ $platform == macos-* ]]; then
   # The system bison is too old.
   brew list bison >/dev/null 2>&1 || brew install bison
   brew list openssl@3 >/dev/null 2>&1 || brew install openssl@3
-  export PATH="$(brew --prefix bison)/bin:$PATH"
+  bison_prefix=$(brew --prefix bison)
+  export PATH="$bison_prefix/bin:$PATH"
   openssl_root=$(brew --prefix openssl@3)
   export MACOSX_DEPLOYMENT_TARGET=12.0
 elif command -v apt-get >/dev/null && [ -n "${CI:-}" ]; then

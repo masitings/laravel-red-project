@@ -3,8 +3,9 @@
 //! * PHP and Valkey built by RED Project's own CI and listed in its runtime
 //!   manifest (a JSON file published with GitHub releases); PHP falls back
 //!   to static-php-cli's prebuilt binaries for versions the manifest lacks.
-//! * PostgreSQL: relocatable builds published by the zonky project on Maven
-//!   Central.
+//! * PostgreSQL: RED's own builds from the manifest (with psql, pg_dump and
+//!   the contrib extensions), else the zonky project's server-only builds on
+//!   Maven Central.
 //! * MySQL: Oracle's official tarballs.
 //! * Node.js: the official builds from nodejs.org.
 //! * Composer: the official `composer.phar` from getcomposer.org.
@@ -202,8 +203,16 @@ pub fn version_matches(version: &str, wanted: &str) -> bool {
     wanted.split('.').all(|part| have.next() == Some(part))
 }
 
+/// Compares dotted versions numerically; missing parts count as zero, so
+/// `17.6` and `17.6.0` (zonky's spelling) are the same version.
 fn compare(a: &str, b: &str) -> std::cmp::Ordering {
-    let parts = |v: &str| -> Vec<u64> { v.split('.').map(|p| p.parse().unwrap_or(0)).collect() };
+    let parts = |v: &str| -> Vec<u64> {
+        let mut parts: Vec<u64> = v.split('.').map(|p| p.parse().unwrap_or(0)).collect();
+        while parts.len() > 1 && parts.last() == Some(&0) {
+            parts.pop();
+        }
+        parts
+    };
     parts(a).cmp(&parts(b))
 }
 
@@ -383,6 +392,37 @@ pub fn pg_release(versions: &[String], wanted: &str, platform: Platform) -> Opti
         }],
         version,
     })
+}
+
+/// PostgreSQL majors from RED's own builds (which include psql, pg_dump and
+/// the contrib extensions), completed with zonky's for majors the manifest
+/// does not have.
+pub fn pg_lines_from(
+    manifest: &Manifest,
+    versions: &[String],
+    platform: Platform,
+) -> Vec<(String, String)> {
+    let mut all = manifest.lines(RuntimeKind::Postgres, platform);
+    for (line, version) in pg_lines(versions) {
+        if !all.iter().any(|(l, _)| *l == line) {
+            all.push((line, version));
+        }
+    }
+    all.sort_by(|(a, _), (b, _)| compare(b, a));
+    all
+}
+
+/// The PostgreSQL release for `wanted`: RED's own build when the manifest
+/// has one, zonky's otherwise.
+pub fn pg_release_from(
+    manifest: &Manifest,
+    versions: &[String],
+    wanted: &str,
+    platform: Platform,
+) -> Option<Release> {
+    manifest
+        .release(RuntimeKind::Postgres, wanted, platform)
+        .or_else(|| pg_release(versions, wanted, platform))
 }
 
 // ---- MySQL: Oracle's tarballs ----------------------------------------------------
@@ -1060,6 +1100,49 @@ mod tests {
                 .unwrap()
                 .ends_with(".jar.sha256")
         );
+    }
+
+    #[test]
+    fn prefers_red_postgres_builds() {
+        let manifest = Manifest {
+            schema: 1,
+            runtimes: vec![ManifestEntry {
+                kind: RuntimeKind::Postgres,
+                line: "18".into(),
+                version: "18.6".into(),
+                platform: "macos-aarch64".into(),
+                url: "https://github.com/o/r/releases/download/runtimes/postgres-18.6-macos-aarch64.tar.gz".into(),
+                sha256: "a".repeat(64),
+            }],
+        };
+        let zonky = vec!["17.11.0".to_owned(), "18.6.0".to_owned()];
+        assert_eq!(
+            pg_lines_from(&manifest, &zonky, MAC_ARM),
+            [
+                ("18".to_owned(), "18.6".to_owned()),
+                ("17".to_owned(), "17.11.0".to_owned())
+            ]
+        );
+        let ours = pg_release_from(&manifest, &zonky, "18", MAC_ARM).unwrap();
+        assert_eq!(ours.version, "18.6");
+        assert_eq!(ours.artifacts[0].format, Format::TarGz);
+        assert!(ours.artifacts[0].url.contains("github.com"));
+        let fallback = pg_release_from(&manifest, &zonky, "17", MAC_ARM).unwrap();
+        assert_eq!(fallback.artifacts[0].format, Format::JarTxz);
+        // A zonky 18.6.0 install is the same version; RED's build (with
+        // psql and pg_dump) replaces it.
+        assert_eq!(
+            update_for(
+                "18.6.0",
+                Some("repo1.maven.org"),
+                None,
+                &ours,
+                Some("github.com")
+            ),
+            Some("18.6".to_owned())
+        );
+        assert_eq!(compare("17.6", "17.6.0"), std::cmp::Ordering::Equal);
+        assert_eq!(compare("17.10", "17.9.0"), std::cmp::Ordering::Greater);
     }
 
     #[test]

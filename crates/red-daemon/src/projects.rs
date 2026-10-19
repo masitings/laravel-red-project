@@ -560,8 +560,10 @@ async fn create_database(r: &Reporter, db: &Database) -> Result<(), String> {
     let port = db.port.to_string();
     let command = match db.kind {
         ServiceKind::Mysql => {
-            let client = red_platform::binaries::companion(&db.binary, &["mysql", "mariadb"])
-                .ok_or("the mysql client was not found next to the server")?;
+            let client = red_platform::binaries::client_tool(&db.binary, &["mysql", "mariadb"])
+                .ok_or_else(|| {
+                    crate::databases::missing_client(db.kind, "the mysql client", &db.binary)
+                })?;
             let mut command = tokio::process::Command::new(client);
             command.args([
                 "--protocol=TCP",
@@ -577,8 +579,8 @@ async fn create_database(r: &Reporter, db: &Database) -> Result<(), String> {
             command
         }
         ServiceKind::Postgres => {
-            let client = red_platform::binaries::companion(&db.binary, &["psql"])
-                .ok_or("psql was not found next to the server")?;
+            let client = red_platform::binaries::client_tool(&db.binary, &["psql"])
+                .ok_or_else(|| crate::databases::missing_client(db.kind, "psql", &db.binary))?;
             let psql = |sql: String| {
                 let mut command = tokio::process::Command::new(&client);
                 command
