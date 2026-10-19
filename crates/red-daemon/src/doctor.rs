@@ -566,9 +566,18 @@ mod tests {
         }
     }
 
+    /// The systemd-resolved drop-in RED writes on Linux (built here rather
+    /// than with `resolver::contents`, which follows the OS running the test).
+    fn drop_in(port: u16) -> String {
+        format!(
+            "{} Remove with `red dns:uninstall`.\n[Resolve]\nDNS=127.0.0.1:{port}\nDomains=~test\n",
+            red_helper::resolver::MARKER
+        )
+    }
+
     #[test]
     fn checks_the_linux_resolver() {
-        let ours = red_helper::resolver::contents("test", 53530);
+        let ours = drop_in(53530);
         let stub = "nameserver 127.0.0.53\noptions edns0\n";
         assert_eq!(
             linux_resolver(&resolver(Some(&ours), Some(stub))).0,
@@ -579,7 +588,7 @@ mod tests {
         assert_eq!(status, CheckStatus::Warn);
         assert!(fix.unwrap().contains("stub-resolv.conf"));
         // Old port.
-        let old = red_helper::resolver::contents("test", 5353);
+        let old = drop_in(5353);
         assert_eq!(
             linux_resolver(&resolver(Some(&old), Some(stub))).0,
             CheckStatus::Fail

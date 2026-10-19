@@ -36,7 +36,7 @@ brew install masitings/red/red          # or only the command-line tools
 ```
 
 Or download `RED-<version>-macos-<arch>.dmg` from the
-[releases page](https://github.com/masitings/red-project/releases) and drag
+[releases page](https://github.com/masitings/laravel-red-project/releases) and drag
 RED to Applications; the app contains the CLI too ("Install the red command"
 on its Status page links it into `~/.local/bin`). Or download the archive
 for your platform, or build from source with `just install`. Keep `red`,
@@ -190,7 +190,7 @@ six hours; `runtimes_auto_update = true` in `config.toml` installs patch
 updates as soon as they appear.
 
 RED's builds are listed with their checksums in `manifest.json` on the
-[`runtimes` release](https://github.com/masitings/red-project/releases/tag/runtimes).
+[`runtimes` release](https://github.com/masitings/laravel-red-project/releases/tag/runtimes).
 Run the Runtimes workflow from the Actions tab to build them (it also runs
 weekly to pick up patch releases).
 

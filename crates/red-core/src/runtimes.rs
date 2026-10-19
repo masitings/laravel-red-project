@@ -437,7 +437,7 @@ pub fn mysql_release(wanted: &str, platform: Platform) -> Option<Release> {
 /// Where RED Project's CI publishes the list of runtimes it built (PHP,
 /// Valkey). Overridable with `runtimes_manifest` in `config.toml`.
 pub const DEFAULT_MANIFEST_URL: &str =
-    "https://github.com/masitings/red-project/releases/download/runtimes/manifest.json";
+    "https://github.com/masitings/laravel-red-project/releases/download/runtimes/manifest.json";
 
 /// The runtime manifest published by RED Project's CI.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -997,7 +997,7 @@ mod tests {
                 layout: Layout::Flat,
             }],
         };
-        let red = "https://github.com/masitings/red-project/releases/download/runtimes/php.tar.gz";
+        let red = "https://github.com/masitings/laravel-red-project/releases/download/runtimes/php.tar.gz";
         let spc = "https://dl.static-php.dev/static-php-cli/bulk/php.tar.gz";
         let host = Some("github.com");
         // Newer patch.
