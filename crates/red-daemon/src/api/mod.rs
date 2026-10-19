@@ -19,8 +19,10 @@ use crate::AppState;
 mod dumps;
 mod logs;
 mod mail;
+mod projects;
 mod runtimes;
 mod services;
+mod settings;
 
 pub(crate) type App = State<Arc<AppState>>;
 pub(crate) type ApiResult<T> = Result<Json<T>, ApiResponse>;
@@ -56,6 +58,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .merge(dumps::routes())
         .merge(logs::routes())
         .merge(runtimes::routes())
+        .merge(projects::routes())
+        .merge(settings::routes())
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
         .with_state(state)
@@ -427,7 +431,7 @@ fn unknown_proxy(name: &str) -> ApiResponse {
 
 // ---- PHP ---------------------------------------------------------------------
 
-async fn list_php(State(app): App) -> Json<PhpListResponse> {
+pub(super) async fn list_php(State(app): App) -> Json<PhpListResponse> {
     let installs = app.php.discover().await;
     let running = app.php.running().await;
     let state = app.state_snapshot();
@@ -437,11 +441,16 @@ async fn list_php(State(app): App) -> Json<PhpListResponse> {
             .into_iter()
             .map(|i| PhpInstallInfo {
                 running: running.contains(&i.version),
-                version: i.version,
                 full_version: i.full_version,
                 fpm_path: i.fpm.display().to_string(),
                 xdebug: i.xdebug.map(|p| p.display().to_string()),
                 xdebug_loaded: i.xdebug_loaded,
+                settings: state
+                    .php_settings
+                    .get(&i.version)
+                    .cloned()
+                    .unwrap_or_default(),
+                version: i.version,
             })
             .collect(),
         xdebug: api_xdebug(state.xdebug),
@@ -494,7 +503,10 @@ async fn set_default_php(
 }
 
 /// Normalise `requested` to a minor version and check it is installed.
-async fn installed_version(app: &AppState, requested: &str) -> Result<String, ApiResponse> {
+pub(super) async fn installed_version(
+    app: &AppState,
+    requested: &str,
+) -> Result<String, ApiResponse> {
     let version = red_core::php::minor_version(requested)
         .ok_or_else(|| bad_request(format!("{requested:?} is not a PHP version like 8.3")))?;
     if app.php.find(&version).is_none() {

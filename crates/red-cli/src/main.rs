@@ -14,6 +14,7 @@ use serde::Serialize;
 mod inspect;
 mod install;
 mod mcp;
+mod new;
 mod project;
 mod runtimes;
 mod services;
@@ -150,7 +151,23 @@ enum Command {
     /// List sites served over HTTPS and when their certificates expire.
     Secured,
     /// Trust RED's local certificate authority (asks for your password).
-    Trust,
+    Trust {
+        /// Only the stores that need no root: the login keychain on macOS,
+        /// the browsers' databases on Linux.
+        #[arg(long)]
+        user_only: bool,
+    },
+    /// The root part of setup in one go, for the app: install the helper and,
+    /// on Linux, add the CA to the system store. Must run as root.
+    #[command(name = "setup:system", hide = true)]
+    SetupSystem {
+        /// User the helper serves.
+        #[arg(long)]
+        uid: u32,
+        /// RED's CA certificate to add to the Linux system store.
+        #[arg(long)]
+        ca: Option<PathBuf>,
+    },
     /// Remove RED's local certificate authority from the trust store.
     Untrust,
     /// Install the privileged helper that opens ports 80/443 (uses sudo).
@@ -295,6 +312,24 @@ enum Command {
     /// Clear captured dumps.
     #[command(name = "dumps:clear")]
     DumpsClear,
+    /// Create a new project (Laravel by default) and serve it.
+    New {
+        /// Directory and site name: lowercase letters, digits and '-'.
+        name: String,
+        /// What to create.
+        #[arg(long, value_enum, default_value_t = new::Kind::Laravel)]
+        kind: new::Kind,
+        /// Where to create it (default: the current directory).
+        #[arg(long)]
+        dir: Option<PathBuf>,
+        /// Serve it over HTTPS.
+        #[arg(long)]
+        secure: bool,
+        /// Service to create its database in (default: SQLite for Laravel,
+        /// the first MySQL service for WordPress).
+        #[arg(long)]
+        db: Option<String>,
+    },
     /// Serve RED to AI agents (Claude Code, Cursor, …) as an MCP server on stdio.
     Mcp,
     /// List logs, or show one: RED, services, PHP-FPM and site logs.
@@ -397,6 +432,23 @@ impl Ctx<'_> {
         }
     }
 
+    /// Stop a redd that was started by hand or by the app, so the login
+    /// agent can start its own; one started by the agent is restarted by
+    /// the agent itself.
+    async fn stop_unmanaged_daemon(&self, paths: &Paths) {
+        let Some(home) = std::env::var_os("HOME") else {
+            return;
+        };
+        if red_platform::services::agent_definition(Path::new(&home)).exists() {
+            return;
+        }
+        if let Ok(status) = self.client.status().await
+            && red_platform::process::interrupt(status.pid)
+        {
+            uninstall::wait_for_daemon_exit(paths);
+        }
+    }
+
     /// Wait until a (re)started redd answers.
     async fn wait_for_daemon(&self) -> anyhow::Result<()> {
         for _ in 0..50 {
@@ -449,6 +501,10 @@ impl Ctx<'_> {
 }
 
 async fn run(cli: &Cli) -> anyhow::Result<()> {
+    // Runs as root from the app's password dialog, where HOME may be root's.
+    if let Command::SetupSystem { uid, ca } = &cli.command {
+        return setup_system(*uid, ca.as_deref());
+    }
     let paths = Paths::discover()?;
     let ctx = Ctx {
         cli,
@@ -650,10 +706,11 @@ async fn run(cli: &Cli) -> anyhow::Result<()> {
                 print_table(&["URL", "VALID UNTIL"], &rows);
             })?;
         }
-        Command::Trust => {
+        Command::Trust { user_only } => {
             let status = ctx.client.status().await?;
-            system::trust(Path::new(&status.paths.ca_cert))?;
+            system::trust(Path::new(&status.paths.ca_cert), *user_only)?;
         }
+        Command::SetupSystem { .. } => unreachable!("handled before paths"),
         Command::Untrust => {
             let status = ctx.client.status().await?;
             system::untrust(Path::new(&status.paths.ca_cert))?;
@@ -665,11 +722,13 @@ async fn run(cli: &Cli) -> anyhow::Result<()> {
         }
         Command::HelperUninstall => install::uninstall_helper()?,
         Command::ServiceInstall => {
+            ctx.stop_unmanaged_daemon(&paths).await;
             install::install_agent(&paths.log_dir)?;
             ctx.wait_for_daemon().await?;
         }
         Command::ServiceUninstall => install::uninstall_agent()?,
         Command::Restart => {
+            ctx.stop_unmanaged_daemon(&paths).await;
             install::restart_agent(&paths.log_dir)?;
             ctx.wait_for_daemon().await?;
             let status = ctx.client.status().await?;
@@ -688,6 +747,7 @@ async fn run(cli: &Cli) -> anyhow::Result<()> {
             println!("1/4  Privileged helper (ports 80 and 443)");
             install::install_helper(red_platform::user::current_uid())?;
             println!("\n2/4  Start redd at login");
+            ctx.stop_unmanaged_daemon(&paths).await;
             install::install_agent(&paths.log_dir)?;
             ctx.wait_for_daemon().await?;
             let php: PhpListResponse = ctx.client.get(endpoints::PHP).await?;
@@ -699,7 +759,7 @@ async fn run(cli: &Cli) -> anyhow::Result<()> {
             ctx.dns(true).await?;
             println!("\n4/4  Trust the local certificate authority");
             let status = ctx.client.status().await?;
-            system::trust(Path::new(&status.paths.ca_cert))?;
+            system::trust(Path::new(&status.paths.ca_cert), false)?;
             println!();
             let report: DoctorReport = ctx.client.get(endpoints::DOCTOR).await?;
             print_doctor(&report);
@@ -771,6 +831,13 @@ async fn run(cli: &Cli) -> anyhow::Result<()> {
         Command::ServicesEnv { name } => services::env(&ctx, name).await?,
         Command::Init => project::init(&ctx).await?,
         Command::Mcp => mcp::serve(ctx.client.clone()).await?,
+        Command::New {
+            name,
+            kind,
+            dir,
+            secure,
+            db,
+        } => new::run(&ctx, name, *kind, dir.clone(), *secure, db.clone()).await?,
         Command::Xdebug => xdebug::status(&ctx).await?,
         Command::XdebugOn => xdebug::set(&ctx, red_api::XdebugMode::On).await?,
         Command::XdebugAuto => xdebug::set(&ctx, red_api::XdebugMode::Auto).await?,
@@ -835,6 +902,21 @@ fn absolute_dir(path: Option<&Path>) -> anyhow::Result<PathBuf> {
 }
 
 /// The site whose path is `dir` or an ancestor of it (deepest match wins).
+/// `red setup:system`: everything in setup that needs root, so the app can
+/// ask for the password once.
+fn setup_system(uid: u32, ca: Option<&Path>) -> anyhow::Result<()> {
+    if !red_platform::user::is_root() {
+        bail!("red setup:system must run as root; use `red setup` instead");
+    }
+    install::install_helper(uid)?;
+    if cfg!(target_os = "linux")
+        && let Some(ca) = ca
+    {
+        system::trust_system_linux(ca)?;
+    }
+    Ok(())
+}
+
 fn site_containing<'a>(sites: &'a [SiteInfo], dir: &Path) -> Option<&'a SiteInfo> {
     sites
         .iter()

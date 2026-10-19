@@ -25,6 +25,8 @@ pub(crate) struct Php {
     pub xdebug: Option<red_platform::php::Xdebug>,
     pub xdebug_mode: red_core::xdebug::XdebugMode,
     pub xdebug_port: u16,
+    /// RED's php.ini settings for this version, as `-d` values.
+    pub settings: Vec<String>,
 }
 
 /// The PHP CLI to use in the current directory.
@@ -36,6 +38,7 @@ pub(crate) async fn resolve_php(ctx: &Ctx<'_>) -> anyhow::Result<Php> {
         .and_then(|v| red_core::php::minor_version(&v));
     let mut installs: Vec<(String, PathBuf)> = Vec::new();
     let mut xdebug_info: Vec<(String, red_platform::php::Xdebug)> = Vec::new();
+    let mut settings_info: Vec<(String, Vec<String>)> = Vec::new();
     let mut xdebug_mode = red_core::xdebug::XdebugMode::default();
     let mut xdebug_port = red_core::xdebug::DEFAULT_CLIENT_PORT;
 
@@ -59,6 +62,10 @@ pub(crate) async fn resolve_php(ctx: &Ctx<'_>) -> anyhow::Result<Php> {
             xdebug_port = list.xdebug_port;
         }
         for install in list.installs {
+            settings_info.push((
+                install.version.clone(),
+                red_core::php_ini::args(&install.settings),
+            ));
             xdebug_info.push((
                 install.version.clone(),
                 red_platform::php::Xdebug {
@@ -95,6 +102,7 @@ pub(crate) async fn resolve_php(ctx: &Ctx<'_>) -> anyhow::Result<Php> {
                     .map(|(_, x)| x.clone()),
                 xdebug_mode,
                 xdebug_port,
+                settings: settings_for(&settings_info, version),
             });
         }
         let installed: Vec<&str> = installs.iter().map(|(v, _)| v.as_str()).collect();
@@ -117,6 +125,7 @@ pub(crate) async fn resolve_php(ctx: &Ctx<'_>) -> anyhow::Result<Php> {
                 .map(|(_, x)| x.clone()),
             xdebug_mode,
             xdebug_port,
+            settings: settings_for(&settings_info, version),
         });
     }
     let binary = red_platform::binaries::in_path("php")
@@ -129,7 +138,23 @@ pub(crate) async fn resolve_php(ctx: &Ctx<'_>) -> anyhow::Result<Php> {
         xdebug: None,
         xdebug_mode,
         xdebug_port,
+        settings: Vec::new(),
     })
+}
+
+fn settings_for(all: &[(String, Vec<String>)], version: &str) -> Vec<String> {
+    all.iter()
+        .find(|(v, _)| v == version)
+        .map(|(_, s)| s.clone())
+        .unwrap_or_default()
+}
+
+/// `-d key=value` for RED's php.ini settings.
+fn settings_args(php: &Php) -> Vec<OsString> {
+    php.settings
+        .iter()
+        .flat_map(|s| [OsString::from("-d"), OsString::from(s)])
+        .collect()
 }
 
 fn php_version(fpm: &Path) -> Option<String> {
@@ -304,6 +329,7 @@ fn ini_args(php: &Path) -> Vec<OsString> {
 pub(crate) async fn php(ctx: &Ctx<'_>, args: &[OsString]) -> anyhow::Result<()> {
     let php = resolve_php(ctx).await?;
     let mut full = ini_args(&php.binary);
+    full.extend(settings_args(&php));
     full.extend(xdebug_args(&php));
     full.extend_from_slice(args);
     exec(&php.binary, &full, &[parent(&php.binary)])
@@ -313,6 +339,7 @@ pub(crate) async fn composer(ctx: &Ctx<'_>, args: &[OsString]) -> anyhow::Result
     let php = resolve_php(ctx).await?;
     let composer = resolve_composer(ctx).await?;
     let mut full = ini_args(&php.binary);
+    full.extend(settings_args(&php));
     full.push(composer.into_os_string());
     full.extend_from_slice(args);
     exec(&php.binary, &full, &[parent(&php.binary)])

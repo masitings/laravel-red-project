@@ -28,4 +28,9 @@ xdebug: string | null,
  * Xdebug is loaded by this installation's own `php.ini`, so it always
  * runs and RED's on-demand switch does not apply.
  */
-xdebug_loaded: boolean, };
+xdebug_loaded: boolean, 
+/**
+ * php.ini settings RED adds for this version (`PUT
+ * /v1/php/{version}/settings`).
+ */
+settings: Record<string, string>, };

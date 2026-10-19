@@ -37,10 +37,15 @@ brew install masitings/red/red          # or only the command-line tools
 
 Or download `RED-<version>-macos-<arch>.dmg` from the
 [releases page](https://github.com/masitings/laravel-red-project/releases) and drag
-RED to Applications; the app contains the CLI too ("Install the red command"
-on its Status page links it into `~/.local/bin`). Or download the archive
-for your platform, or build from source with `just install`. Keep `red`,
-`redd` and `red-helper` in the same directory, then run once:
+RED to Applications. On first launch the app walks you through setup, one
+button per step: the helper for ports 80 and 443 (one password prompt),
+starting at login, PHP, `.test` DNS, trusted HTTPS and the `red` command.
+No terminal needed. It then lives in the menu bar: sites, services, mail and
+logs one click away; closing the window keeps it running there.
+
+Or download the archive for your platform, or build from source with
+`just install`. Keep `red`, `redd` and `red-helper` in the same directory,
+then run once:
 
 ```sh
 red setup     # installs the helper (80/443), starts redd at login,
@@ -107,6 +112,34 @@ red unproxy vite
 red doctor                      # what is set up, and how to fix what isn't
 red events                      # watch what the daemon is doing
 ```
+
+### New projects
+
+```sh
+red new shop                     # Laravel in ./shop, served at shop.test
+red new shop --kind react --db mysql --secure
+red new blog --kind wordpress    # latest WordPress on your MySQL service
+red new demo --kind blank        # just public/index.php
+```
+
+Kinds: `laravel` (default), `react`, `vue` and `livewire` (Laravel's
+starter kits, frontend built with RED's Node.js), `wordpress` and `blank`.
+RED creates the database in the service you name (Laravel uses SQLite
+otherwise), points `.env` or `wp-config.php` at it and at RED's mail
+catcher, and serves the folder: as part of a parked folder, or linked. The
+app's Sites page does the same with **New site**, showing the output as it
+runs.
+
+### Settings and php.ini
+
+The app's Settings page manages parked folders, opening RED at login, and
+the mail, dump and Xdebug ports (in `config.toml`; applied after restarting
+redd). On the PHP page, **Settings** per version sets `memory_limit`,
+upload sizes, `max_execution_time`, `display_errors`, `date.timezone` and
+any other php.ini value. RED passes them to PHP-FPM, `red php` and
+`red composer` on top of the installation's own php.ini, so they work the
+same for RED's builds, Homebrew and apt; it also lists the loaded
+extensions.
 
 ### Databases and caches
 
@@ -187,7 +220,8 @@ settings, for example in `.cursor/mcp.json`:
 Tools: `status`, `doctor`, `list_sites`, `site_for_path`, `link_site`,
 `secure_site`, `php_versions`, `set_xdebug`, `list_logs`, `read_log`,
 `list_mail`, `read_mail`, `clear_mail`, `list_dumps`, `clear_dumps`,
-`list_services`, `service_action`, `list_runtimes`, `list_proxies`. Each is
+`list_services`, `service_action`, `create_project`, `list_projects`,
+`list_runtimes`, `list_proxies`. Each is
 marked read-only or not, so clients can ask before changes; nothing runs
 outside RED's own API.
 
@@ -300,6 +334,7 @@ Where RED keeps its files:
 | M1 MVP ✓ | Park/link, `.test` DNS, local HTTPS, multiple PHP versions, proxies with WebSocket, GUI for sites and PHP | v0.1.0 |
 | M2 Dev tools ✓ | MySQL/PostgreSQL/Valkey, mail catcher, dumps, log viewer, `red.toml`, Node per site, desktop app bundle | v0.2.0 |
 | M3 Distribution | Downloadable runtimes ✓, runtime and app updates ✓, signing/notarization and Homebrew tap in CI ✓, Linux DNS/trust/packages ✓ | Signed releases on both OSes |
+| M3.5 Everyday app ✓ | Setup in the app, menu bar, new projects (Laravel, starter kits, WordPress), Settings, php.ini per version | v0.4.0 |
 | M4 Advanced | On-demand Xdebug ✓, MCP server ✓, sharing/tunnels, profiler, git workspaces | v1.0.0 |
 
 ## Contributing

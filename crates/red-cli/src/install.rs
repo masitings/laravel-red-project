@@ -6,7 +6,7 @@ use std::process::{Command, Stdio};
 use anyhow::{Context, bail};
 use red_platform::services;
 
-use crate::system::run;
+use crate::system::{root, root_command, run};
 
 /// A binary installed next to the running `red`, e.g. `redd` or `red-helper`.
 pub fn sibling_binary(name: &str) -> anyhow::Result<std::path::PathBuf> {
@@ -25,20 +25,18 @@ pub fn sibling_binary(name: &str) -> anyhow::Result<std::path::PathBuf> {
     Ok(path)
 }
 
-/// Write `contents` to a root-owned file through `sudo install`.
+/// Write `contents` to a root-owned file through `sudo install` (or
+/// `install` when already root).
 fn sudo_write(dest: &Path, contents: &str, mode: &str) -> anyhow::Result<()> {
     let tmp = std::env::temp_dir().join(format!("red-{}.tmp", std::process::id()));
     std::fs::write(&tmp, contents).context("could not write a temporary file")?;
-    let result = run(
-        "sudo",
-        &[
-            "install",
-            "-m",
-            mode,
-            &tmp.display().to_string(),
-            &dest.display().to_string(),
-        ],
-    );
+    let result = root(&[
+        "install",
+        "-m",
+        mode,
+        &tmp.display().to_string(),
+        &dest.display().to_string(),
+    ]);
     let _ = std::fs::remove_file(&tmp);
     result
 }
@@ -49,22 +47,23 @@ pub fn install_helper(uid: u32) -> anyhow::Result<()> {
     let binary = services::helper_binary();
     let definition = services::helper_definition();
     let socket = red_helper_socket();
-    println!("Installing red-helper (sudo will ask for your password):");
+    if red_platform::user::is_root() {
+        println!("Installing red-helper:");
+    } else {
+        println!("Installing red-helper (sudo will ask for your password):");
+    }
     println!("  {} → {}", source.display(), binary.display());
     println!("  {}", definition.display());
     if let Some(dir) = binary.parent() {
-        run("sudo", &["mkdir", "-p", &dir.display().to_string()])?;
+        root(&["mkdir", "-p", &dir.display().to_string()])?;
     }
-    run(
-        "sudo",
-        &[
-            "install",
-            "-m",
-            "0755",
-            &source.display().to_string(),
-            &binary.display().to_string(),
-        ],
-    )?;
+    root(&[
+        "install",
+        "-m",
+        "0755",
+        &source.display().to_string(),
+        &binary.display().to_string(),
+    ])?;
     if cfg!(target_os = "macos") {
         sudo_write(
             &definition,
@@ -72,31 +71,25 @@ pub fn install_helper(uid: u32) -> anyhow::Result<()> {
             "0644",
         )?;
         let target = format!("system/{}", services::HELPER_LABEL);
-        let _ = Command::new("sudo")
-            .args(["launchctl", "bootout", &target])
+        let _ = root_command("launchctl")
+            .args(["bootout", &target])
             .stderr(Stdio::null())
             .status();
-        run(
-            "sudo",
-            &[
-                "launchctl",
-                "bootstrap",
-                "system",
-                &definition.display().to_string(),
-            ],
-        )?;
+        root(&[
+            "launchctl",
+            "bootstrap",
+            "system",
+            &definition.display().to_string(),
+        ])?;
     } else {
         sudo_write(
             &definition,
             &services::helper_unit(&binary, &socket, uid),
             "0644",
         )?;
-        run("sudo", &["systemctl", "daemon-reload"])?;
-        run(
-            "sudo",
-            &["systemctl", "enable", "--now", "red-helper.service"],
-        )?;
-        run("sudo", &["systemctl", "restart", "red-helper.service"])?;
+        root(&["systemctl", "daemon-reload"])?;
+        root(&["systemctl", "enable", "--now", "red-helper.service"])?;
+        root(&["systemctl", "restart", "red-helper.service"])?;
     }
     println!("red-helper is running. Restart redd to move to ports 80 and 443.");
     Ok(())
@@ -109,23 +102,20 @@ pub fn uninstall_helper() -> anyhow::Result<()> {
     println!("Removing red-helper (sudo will ask for your password).");
     if cfg!(target_os = "macos") {
         let target = format!("system/{}", services::HELPER_LABEL);
-        let _ = Command::new("sudo")
-            .args(["launchctl", "bootout", &target])
+        let _ = root_command("launchctl")
+            .args(["bootout", &target])
             .status();
     } else {
-        let _ = Command::new("sudo")
-            .args(["systemctl", "disable", "--now", "red-helper.service"])
+        let _ = root_command("systemctl")
+            .args(["disable", "--now", "red-helper.service"])
             .status();
     }
-    run(
-        "sudo",
-        &[
-            "rm",
-            "-f",
-            &definition.display().to_string(),
-            &binary.display().to_string(),
-        ],
-    )?;
+    root(&[
+        "rm",
+        "-f",
+        &definition.display().to_string(),
+        &binary.display().to_string(),
+    ])?;
     println!("Removed. redd falls back to ports 8180 and 8443 after a restart.");
     Ok(())
 }

@@ -167,7 +167,7 @@ fn stop_daemon(paths: &Paths, pid: Option<u32>) {
 
 /// Give redd a moment to stop (the login agent was just removed) so its
 /// files are not deleted under it.
-fn wait_for_daemon_exit(paths: &Paths) {
+pub(crate) fn wait_for_daemon_exit(paths: &Paths) {
     let socket = paths.socket();
     for _ in 0..50 {
         if !socket.exists() {

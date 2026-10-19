@@ -1,5 +1,7 @@
+import { useState } from "react";
 import type { XdebugMode } from "../api/gen/XdebugMode";
 import { usePhp, useSetDefaultPhp, useSetXdebug } from "../api/queries";
+import { PhpSettings } from "../components/PhpSettings";
 import { RuntimeInstaller } from "../components/RuntimeInstaller";
 import { Badge, Button, Card, ErrorNote } from "../components/ui";
 
@@ -32,6 +34,7 @@ function Versions() {
   const php = usePhp();
   const setDefault = useSetDefaultPhp();
   const installs = php.data?.installs ?? [];
+  const [open, setOpen] = useState<string | null>(null);
 
   return (
     <Card title="PHP versions">
@@ -45,28 +48,42 @@ function Versions() {
         {installs.map((install) => {
           const isDefault = php.data?.default === install.version;
           return (
-            <li key={install.version} className="flex items-center justify-between gap-3 py-3">
-              <div>
-                <div className="flex items-center gap-2 font-medium">
-                  PHP {install.full_version}
-                  {isDefault && <Badge tone="good">default</Badge>}
-                  {install.running && <Badge>running</Badge>}
-                  {install.xdebug_loaded ? (
-                    <Badge tone="warn">Xdebug always on (php.ini)</Badge>
-                  ) : (
-                    install.xdebug && <Badge>Xdebug</Badge>
+            <li key={install.version} className="py-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="flex items-center gap-2 font-medium">
+                    PHP {install.full_version}
+                    {isDefault && <Badge tone="good">default</Badge>}
+                    {install.running && <Badge>running</Badge>}
+                    {install.xdebug_loaded ? (
+                      <Badge tone="warn">Xdebug always on (php.ini)</Badge>
+                    ) : (
+                      install.xdebug && <Badge>Xdebug</Badge>
+                    )}
+                  </div>
+                  <div className="text-xs text-stone-500">{install.fpm_path}</div>
+                </div>
+                <div className="flex shrink-0 gap-2">
+                  <Button
+                    variant="ghost"
+                    aria-expanded={open === install.version}
+                    onClick={() => setOpen(open === install.version ? null : install.version)}
+                  >
+                    Settings
+                    {Object.keys(install.settings).length > 0 &&
+                      ` (${Object.keys(install.settings).length})`}
+                  </Button>
+                  {!isDefault && (
+                    <Button
+                      onClick={() => setDefault.mutate(install.version)}
+                      disabled={setDefault.isPending}
+                    >
+                      Make default
+                    </Button>
                   )}
                 </div>
-                <div className="text-xs text-stone-500">{install.fpm_path}</div>
               </div>
-              {!isDefault && (
-                <Button
-                  onClick={() => setDefault.mutate(install.version)}
-                  disabled={setDefault.isPending}
-                >
-                  Make default
-                </Button>
-              )}
+              {open === install.version && <PhpSettings install={install} />}
             </li>
           );
         })}
@@ -99,29 +116,30 @@ function Xdebug() {
   return (
     <Card title="Xdebug">
       <div className="space-y-3 text-sm">
-        <div
-          role="radiogroup"
-          aria-label="Xdebug mode"
-          className="inline-flex rounded-md border border-stone-300 dark:border-stone-700"
-        >
+        <fieldset className="inline-flex rounded-md border border-stone-300 dark:border-stone-700">
+          <legend className="sr-only">Xdebug mode</legend>
           {xdebugModes.map(({ mode, label }) => (
-            <button
+            <label
               key={mode}
-              type="button"
-              role="radio"
-              aria-checked={data.xdebug === mode}
-              disabled={setXdebug.isPending}
-              onClick={() => setXdebug.mutate(mode)}
-              className={`px-3 py-1 text-sm first:rounded-l-md last:rounded-r-md ${
+              className={`cursor-pointer px-3 py-1 text-sm first-of-type:rounded-l-md last-of-type:rounded-r-md has-[:focus-visible]:outline has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-red-500 ${
                 data.xdebug === mode
                   ? "bg-red-600 font-medium text-white"
                   : "hover:bg-stone-100 dark:hover:bg-stone-800"
               }`}
             >
+              <input
+                type="radio"
+                name="xdebug-mode"
+                value={mode}
+                className="sr-only"
+                checked={data.xdebug === mode}
+                disabled={setXdebug.isPending}
+                onChange={() => setXdebug.mutate(mode)}
+              />
               {label}
-            </button>
+            </label>
           ))}
-        </div>
+        </fieldset>
         <p className="text-stone-600 dark:text-stone-400">{help}</p>
         {data.xdebug !== "off" && (
           <p className="text-stone-600 dark:text-stone-400">

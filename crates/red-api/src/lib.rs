@@ -57,6 +57,10 @@ pub mod endpoints {
     /// progress. `POST`: install one (returns the job).
     /// `DELETE /v1/runtimes/{kind}/{line}`: remove one.
     pub const RUNTIMES: &str = "/v1/runtimes";
+    /// `GET`: RED's settings. `PUT`: change them (applies after a restart).
+    pub const SETTINGS: &str = "/v1/settings";
+    /// `GET`: recent project creations. `POST`: create a project.
+    pub const PROJECTS: &str = "/v1/projects";
     /// `GET`: known log files.
     pub const LOGS: &str = "/v1/logs";
     /// `GET ?id=<log id>&lines=<n>`: the end of one log.
@@ -101,6 +105,16 @@ pub mod endpoints {
     /// `/v1/runtimes/{kind}/{line}`
     pub fn runtime(kind: &str, line: &str) -> String {
         format!("{RUNTIMES}/{kind}/{line}")
+    }
+
+    /// `/v1/php/{version}/settings`: `PUT` replaces RED's php.ini settings.
+    pub fn php_settings(version: &str) -> String {
+        format!("{PHP}/{version}/settings")
+    }
+
+    /// `/v1/php/{version}/info`: extensions and effective settings.
+    pub fn php_info(version: &str) -> String {
+        format!("{PHP}/{version}/info")
     }
 
     /// `/v1/mail/{id}`

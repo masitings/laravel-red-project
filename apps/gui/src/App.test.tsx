@@ -78,6 +78,7 @@ const php: PhpListResponse = {
       running: true,
       xdebug: "/data/runtimes/php/8.4/lib/xdebug.so",
       xdebug_loaded: false,
+      settings: { memory_limit: "512M" },
     },
     {
       version: "8.2",
@@ -86,6 +87,7 @@ const php: PhpListResponse = {
       running: false,
       xdebug: null,
       xdebug_loaded: false,
+      settings: {},
     },
   ],
   xdebug: "auto",
@@ -212,8 +214,24 @@ const runtimes: RuntimesResponse = {
   catalog_errors: [],
 };
 
+let settings = {
+  tld: "test",
+  http_port: 80,
+  https_port: 443,
+  smtp_port: 2525,
+  dump_port: 9912,
+  xdebug_port: 9003,
+  runtimes_auto_update: false,
+  config_file: "/Users/me/Library/Application Support/RED/config.toml",
+  restart_required: false,
+};
+
 function mockDaemon() {
-  vi.mocked(api).mockImplementation(async (method: string, path: string) => {
+  vi.mocked(api).mockImplementation(async (method: string, path: string, body?: unknown) => {
+    if (method === "PUT" && path === "/v1/settings") {
+      settings = { ...settings, ...(body as object), restart_required: true };
+      return settings;
+    }
     if (method !== "GET") return null;
     switch (path) {
       case "/v1/status":
@@ -226,6 +244,17 @@ function mockDaemon() {
         return php;
       case "/v1/doctor":
         return doctor;
+      case "/v1/paths":
+        return ["/Users/me/Sites"];
+      case "/v1/settings":
+        return settings;
+      case "/v1/php/8.4/info":
+        return {
+          version: "8.4",
+          ini_file: "/opt/homebrew/etc/php/8.4/php.ini",
+          extensions: ["core", "pdo_mysql"],
+          values: { memory_limit: "512M", upload_max_filesize: "2M" },
+        };
       case "/v1/services":
         return services;
       case "/v1/mail":
@@ -309,13 +338,55 @@ describe("App", () => {
     mockDaemon();
     renderApp();
     fireEvent.click(await screen.findByText("PHP"));
-    expect(await screen.findByRole("radio", { name: "On demand" })).toHaveAttribute(
-      "aria-checked",
-      "true",
-    );
+    expect(await screen.findByRole("radio", { name: "On demand" })).toBeChecked();
     expect(screen.getByText("No Xdebug for PHP 8.2", { exact: false })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("radio", { name: "Always" }));
     await waitFor(() => expect(api).toHaveBeenCalledWith("PUT", "/v1/xdebug", { mode: "on" }));
+  });
+
+  it("changes ports in Settings and asks for a restart", async () => {
+    mockDaemon();
+    renderApp();
+    fireEvent.click(await screen.findByText("Settings"));
+    expect(await screen.findByText("/Users/me/Sites")).toBeInTheDocument();
+    const smtp = await screen.findByLabelText("Mail (SMTP) port");
+    await waitFor(() => expect(smtp).toHaveValue(2525));
+    fireEvent.change(smtp, { target: { value: "2626" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(api).toHaveBeenCalledWith(
+        "PUT",
+        "/v1/settings",
+        expect.objectContaining({ smtp_port: 2626, runtimes_auto_update: false }),
+      ),
+    );
+    expect(await screen.findByText(/Restart redd to use the new settings/)).toBeInTheDocument();
+  });
+
+  it("edits php.ini settings per version", async () => {
+    mockDaemon();
+    renderApp();
+    fireEvent.click(await screen.findByText("PHP"));
+    fireEvent.click(await screen.findByRole("button", { name: "Settings (1)" }));
+    expect(screen.getByLabelText("memory_limit")).toHaveValue("512M");
+    expect(await screen.findByText("/opt/homebrew/etc/php/8.4/php.ini")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByLabelText("upload_max_filesize")).toHaveAttribute("placeholder", "2M"),
+    );
+    fireEvent.change(screen.getByLabelText("upload_max_filesize"), { target: { value: "64M" } });
+    fireEvent.change(screen.getByLabelText("Other settings"), {
+      target: { value: "opcache.enable = 0" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(api).toHaveBeenCalledWith("PUT", "/v1/php/8.4/settings", {
+        settings: expect.objectContaining({
+          memory_limit: "512M",
+          upload_max_filesize: "64M",
+          "opcache.enable": "0",
+        }),
+      }),
+    );
   });
 
   it("installs and updates PHP builds", async () => {

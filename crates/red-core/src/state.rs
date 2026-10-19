@@ -31,6 +31,10 @@ pub struct State {
     pub capture_dumps: bool,
     /// When sites run with Xdebug (see [`crate::xdebug`]).
     pub xdebug: crate::xdebug::XdebugMode,
+    /// php.ini settings per PHP version (`"8.4"` → `memory_limit` → `1G`),
+    /// see [`crate::php_ini`].
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub php_settings: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 /// Errors produced while reading or writing the state file.

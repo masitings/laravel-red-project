@@ -8,6 +8,7 @@ pub mod config;
 pub mod driver;
 pub mod logs;
 pub mod php;
+pub mod php_ini;
 pub mod project;
 pub mod runtimes;
 pub mod services;

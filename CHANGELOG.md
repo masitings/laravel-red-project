@@ -6,6 +6,54 @@ All notable changes to RED Project. The format follows
 
 ## [Unreleased]
 
+### Setup in the app
+- First launch opens a setup screen with one button per step: the helper
+  for ports 80 and 443, starting redd at login, PHP, `.test` DNS, trusting
+  the local CA, and the `red` command. Done steps show as done; it can be
+  skipped and opened again from Status ("Set up RED…").
+- The root part runs behind the system's own password dialog (macOS) or
+  pkexec (Linux), once, through the new hidden `red setup:system`. On Linux
+  it also adds the CA to the system store; `red trust --user-only` then
+  covers the browsers. The CLI's root steps run directly when already root.
+- `red service:install`, `red setup` and `red restart` stop a redd that was
+  started by hand or by the app before the login agent starts its own.
+- Linux `red trust` skips the system store when it already has RED's CA.
+
+### Menu bar
+- RED has a menu bar (tray) icon: whether redd runs, sites (click to open),
+  services to start, stop or restart, Mail, Logs, Open RED and Quit. It
+  follows redd's events.
+- On macOS closing the window keeps RED in the menu bar (and out of the
+  Dock); clicking the Dock icon or Open RED brings it back.
+- Settings → "Open RED at login" starts the app in the menu bar at login.
+
+### New projects
+- `red new <name>` and **New site** in the app create a project and serve
+  it: Laravel, Laravel's React, Vue or Livewire starter kit (frontend built
+  with npm when Node.js is installed), WordPress (latest, on a MySQL
+  service) or an empty site.
+- RED creates the project's database in the chosen MySQL or PostgreSQL
+  service, sets `.env` (APP_URL, database, MAIL_* to the mail catcher with
+  the project's own mailbox) or `wp-config.php` (database and fresh salts),
+  runs migrations, and links the folder unless it is in a parked one; HTTPS
+  optional. Output streams to the app and the CLI; a failed creation removes
+  the half-made folder.
+- API: `POST`/`GET /v1/projects` with the `projects_changed` event; MCP:
+  `create_project` and `list_projects`.
+
+### Settings and php.ini
+- Settings page: parked folders (add, remove), opening RED and redd at
+  login, mail, dump and Xdebug ports and automatic runtime updates. Changes
+  go to `config.toml` (comments kept) through `GET`/`PUT /v1/settings`,
+  which says when redd needs a restart; the page offers it.
+- php.ini settings per PHP version (`PUT /v1/php/{version}/settings`):
+  common fields plus any `key = value`, passed as `-d` to PHP-FPM (pools
+  restart when they change), `red php` and `red composer`.
+  `GET /v1/php/{version}/info` reports the php.ini file, loaded extensions
+  and effective values.
+- The Xdebug mode switch uses real radio buttons (fixes the lint error in
+  CI).
+
 ### Xdebug
 - Xdebug on demand: sites run in a PHP-FPM pool without Xdebug, and RED
   starts a second pool per PHP version with Xdebug loaded for requests that

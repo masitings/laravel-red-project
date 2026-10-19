@@ -165,34 +165,163 @@ pub fn start_daemon() -> Result<String, CommandError> {
 /// updated itself and the running daemon is still the old version.
 #[tauri::command]
 pub async fn restart_daemon() -> Result<String, CommandError> {
-    let red = bundled("red")
+    run_red(&["restart"]).await
+}
+
+/// The `red` the app runs: its own copy, else one on this machine.
+fn find_red() -> Result<std::path::PathBuf, CommandError> {
+    bundled("red")
         .into_iter()
         .chain(home_bin("red"))
         .chain(red_platform::binaries::in_path("red"))
         .find(|p| p.is_file())
         .ok_or_else(|| CommandError {
-            hint: Some("Install the command-line tool from the Status tab first.".into()),
+            hint: Some("Install RED's command-line tools, then run `red setup`.".into()),
             ..CommandError::new("not_found", "red was not found")
-        })?;
+        })
+}
+
+/// Run `red <args>` and return what it printed.
+async fn run_red(args: &[&str]) -> Result<String, CommandError> {
+    let red = find_red()?;
     let output = tokio::process::Command::new(&red)
-        .arg("restart")
+        .args(args)
         .stdin(std::process::Stdio::null())
         .output()
         .await
         .map_err(|err| {
             CommandError::new("internal", format!("cannot run {}: {err}", red.display()))
         })?;
+    finish(&format!("red {}", args.join(" ")), &output)
+}
+
+fn finish(what: &str, output: &std::process::Output) -> Result<String, CommandError> {
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
-    } else {
-        Err(CommandError::new(
-            "internal",
-            format!(
-                "`red restart` failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            ),
-        ))
+        return Ok(stdout);
     }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    // osascript: "User canceled. (-128)"; pkexec: exit 126 when dismissed.
+    if stderr.contains("(-128)") || output.status.code() == Some(126) {
+        return Err(CommandError::new("cancelled", "cancelled"));
+    }
+    let detail = [stdout.as_str(), stderr.as_str()]
+        .iter()
+        .filter(|t| !t.is_empty())
+        .copied()
+        .collect::<Vec<_>>()
+        .join("\n");
+    Err(CommandError::new(
+        "internal",
+        format!("`{what}` failed: {detail}"),
+    ))
+}
+
+/// One step of first-run setup, as the onboarding screen runs them:
+///
+/// - `system`: the root part (`red setup:system`: the helper for ports 80
+///   and 443, and on Linux the system CA store), behind the system's own
+///   password dialog;
+/// - `autostart`: start redd at login (`red service:install`, which also
+///   restarts it onto ports 80 and 443);
+/// - `trust`: trust the local CA in the login keychain or the browsers
+///   (`red trust --user-only`).
+#[tauri::command]
+pub async fn setup_step(
+    state: tauri::State<'_, ApiState>,
+    step: String,
+) -> Result<String, CommandError> {
+    match step.as_str() {
+        "system" => setup_system(&state).await,
+        "autostart" => run_red(&["service:install"]).await,
+        "trust" => run_red(&["trust", "--user-only"]).await,
+        other => Err(CommandError::new(
+            "bad_request",
+            format!("unknown setup step {other}"),
+        )),
+    }
+}
+
+async fn setup_system(state: &ApiState) -> Result<String, CommandError> {
+    let red = find_red()?.display().to_string();
+    let uid = red_platform::user::current_uid().to_string();
+    let mut args = vec![red, "setup:system".to_owned(), "--uid".to_owned(), uid];
+    if cfg!(target_os = "linux") {
+        let status = forward(state, "GET", red_api::endpoints::STATUS, None).await?;
+        if let Some(ca) = status.pointer("/paths/ca_cert").and_then(|v| v.as_str()) {
+            args.extend(["--ca".to_owned(), ca.to_owned()]);
+        }
+    }
+    let mut command = if cfg!(target_os = "macos") {
+        let mut command = tokio::process::Command::new("osascript");
+        command.args([
+            "-e",
+            &admin_script(
+                &args,
+                "RED needs your password to serve sites on ports 80 and 443.",
+            ),
+        ]);
+        command
+    } else {
+        let pkexec = red_platform::binaries::in_path("pkexec")
+            .into_iter()
+            .next()
+            .ok_or_else(|| CommandError {
+                hint: Some("Run `red setup` in a terminal instead.".into()),
+                ..CommandError::new("not_found", "pkexec is not installed")
+            })?;
+        let mut command = tokio::process::Command::new(pkexec);
+        command.args(&args);
+        command
+    };
+    let output = command
+        .stdin(std::process::Stdio::null())
+        .output()
+        .await
+        .map_err(|err| CommandError::new("internal", err.to_string()))?;
+    finish("red setup:system", &output)
+}
+
+/// Quote `arg` for `sh`.
+fn shell_quote(arg: &str) -> String {
+    format!("'{}'", arg.replace('\'', "'\\''"))
+}
+
+/// AppleScript that runs `args` as root after the macOS password dialog.
+fn admin_script(args: &[String], prompt: &str) -> String {
+    let command = args
+        .iter()
+        .map(|a| shell_quote(a))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let quote = |text: &str| text.replace('\\', "\\\\").replace('"', "\\\"");
+    format!(
+        "do shell script \"{}\" with prompt \"{}\" with administrator privileges",
+        quote(&command),
+        quote(prompt)
+    )
+}
+
+/// Whether the app opens (in the menu bar) when you log in.
+#[tauri::command]
+pub fn app_autostart(app: tauri::AppHandle) -> Result<bool, CommandError> {
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch()
+        .is_enabled()
+        .map_err(|e| CommandError::new("internal", e.to_string()))
+}
+
+#[tauri::command]
+pub fn set_app_autostart(app: tauri::AppHandle, on: bool) -> Result<bool, CommandError> {
+    use tauri_plugin_autostart::ManagerExt;
+    let launcher = app.autolaunch();
+    let result = if on {
+        launcher.enable()
+    } else {
+        launcher.disable()
+    };
+    result.map_err(|e| CommandError::new("internal", e.to_string()))?;
+    Ok(on)
 }
 
 /// Whether this build can update itself (it was released with an update
@@ -356,6 +485,37 @@ mod tests {
         assert_eq!(err.code, "bad_request");
         let err = save(&state, "/v1/mail/../status", &dest).await.unwrap_err();
         assert_eq!(err.code, "bad_request");
+    }
+
+    #[test]
+    fn builds_the_admin_script() {
+        let args = vec![
+            "/Applications/RED.app/Contents/MacOS/red".to_owned(),
+            "setup:system".to_owned(),
+            "it's \"x\"".to_owned(),
+        ];
+        assert_eq!(
+            admin_script(&args, "Need \"pw\""),
+            r#"do shell script "'/Applications/RED.app/Contents/MacOS/red' 'setup:system' 'it'\\''s \"x\"'" with prompt "Need \"pw\"" with administrator privileges"#
+        );
+    }
+
+    #[test]
+    fn reports_cancelled_dialogs() {
+        use std::os::unix::process::ExitStatusExt;
+        let output = std::process::Output {
+            status: std::process::ExitStatus::from_raw(1 << 8),
+            stdout: Vec::new(),
+            stderr: b"0:200: execution error: User canceled. (-128)".to_vec(),
+        };
+        assert_eq!(finish("x", &output).unwrap_err().code, "cancelled");
+        let output = std::process::Output {
+            stderr: b"boom".to_vec(),
+            ..output
+        };
+        let err = finish("x", &output).unwrap_err();
+        assert_eq!(err.code, "internal");
+        assert!(err.message.contains("boom"));
     }
 
     #[test]

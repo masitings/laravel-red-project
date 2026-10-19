@@ -270,6 +270,28 @@ impl Server {
                     .await?;
                 Ok(json!({ "service": service }))
             }
+            "create_project" => {
+                let name = required(args, "name")?;
+                let kind = optional(args, "kind")?.unwrap_or("laravel");
+                let directory = required(args, "directory")?;
+                if !Path::new(directory).is_absolute() {
+                    return Err(ToolError::Input("directory must be absolute".into()));
+                }
+                let mut body = json!({
+                    "name": name,
+                    "kind": kind,
+                    "directory": directory,
+                    "secure": args.get("secure").and_then(Value::as_bool).unwrap_or(true),
+                });
+                if let Some(db) = optional(args, "database")? {
+                    body["database"] = json!(db);
+                }
+                let job = self
+                    .send(Method::POST, endpoints::PROJECTS, Some(body))
+                    .await?;
+                Ok(json!({ "project": job }))
+            }
+            "list_projects" => Ok(json!({ "projects": self.get(endpoints::PROJECTS).await? })),
             "list_runtimes" => self.get(endpoints::RUNTIMES).await,
             "list_proxies" => Ok(json!({ "proxies": self.get(endpoints::PROXIES).await? })),
             _ => unreachable!("checked against TOOLS"),
@@ -600,6 +622,58 @@ const TOOLS: &[Tool] = &[
             ("action", "string", "start, stop or restart.", true),
         ],
         enums: &[("action", &["start", "stop", "restart"])],
+    },
+    Tool {
+        name: "create_project",
+        title: "Create a project",
+        description: "Create a new project in a directory and serve it: Laravel (plain or a starter kit), WordPress or an empty site. Sets up its database in a RED service and points its mail at RED. Runs in the background; follow it with list_projects.",
+        effect: Effect::Change,
+        params: &[
+            (
+                "name",
+                "string",
+                "Directory and site name: lowercase letters, digits and '-'.",
+                true,
+            ),
+            (
+                "directory",
+                "string",
+                "Absolute path of the folder to create it in.",
+                true,
+            ),
+            ("kind", "string", "What to create (default laravel).", false),
+            (
+                "database",
+                "string",
+                "MySQL or PostgreSQL service for its database (default: SQLite for Laravel, the first MySQL service for WordPress).",
+                false,
+            ),
+            (
+                "secure",
+                "boolean",
+                "Serve over HTTPS (default true).",
+                false,
+            ),
+        ],
+        enums: &[(
+            "kind",
+            &[
+                "laravel",
+                "laravel_react",
+                "laravel_vue",
+                "laravel_livewire",
+                "wordpress",
+                "blank",
+            ],
+        )],
+    },
+    Tool {
+        name: "list_projects",
+        title: "Project creations",
+        description: "Running and recent project creations: step, output so far, URL when ready, or the error.",
+        effect: Effect::Read,
+        params: &[],
+        enums: &[],
     },
     Tool {
         name: "list_runtimes",

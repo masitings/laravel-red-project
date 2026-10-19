@@ -39,6 +39,9 @@ export function useDaemonEvents() {
           client.invalidateQueries({ queryKey: keys.php });
           client.invalidateQueries({ queryKey: keys.services });
           break;
+        case "projects_changed":
+          client.invalidateQueries({ queryKey: keys.projects });
+          break;
         case "dump_received":
         case "dumps_changed":
           client.invalidateQueries({ queryKey: keys.dumps });
@@ -50,4 +53,15 @@ export function useDaemonEvents() {
       unlisten.then((stop) => stop());
     };
   }, [client]);
+}
+
+/** Call `show` with the tab the tray menu asks for ("Mail", "Logs"). */
+export function useNavigateEvents(show: (tab: string) => void) {
+  useEffect(() => {
+    if (!isTauri()) return;
+    const unlisten = listen<string>("red://navigate", (message) => show(message.payload));
+    return () => {
+      unlisten.then((stop) => stop());
+    };
+  }, [show]);
 }

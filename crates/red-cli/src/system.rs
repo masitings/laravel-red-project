@@ -36,6 +36,38 @@ fn run_quiet(program: &str, args: &[&str]) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// `program` as root: directly when RED already runs as root (`red
+/// setup:system`, started by the app through the OS password dialog),
+/// otherwise through `sudo`.
+pub(crate) fn root_command(program: &str) -> Command {
+    if red_platform::user::is_root() {
+        Command::new(program)
+    } else {
+        let mut command = Command::new("sudo");
+        command.arg(program);
+        command
+    }
+}
+
+/// Run `args[0]` with the rest of `args` as root; see [`root_command`].
+pub(crate) fn root(args: &[&str]) -> anyhow::Result<()> {
+    let (program, rest) = args.split_first().context("no command")?;
+    if red_platform::user::is_root() {
+        run(program, rest)
+    } else {
+        run("sudo", args)
+    }
+}
+
+fn root_quiet(args: &[&str]) -> anyhow::Result<()> {
+    let (program, rest) = args.split_first().context("no command")?;
+    if red_platform::user::is_root() {
+        run_quiet(program, rest)
+    } else {
+        run_quiet("sudo", args)
+    }
+}
+
 fn has_tool(name: &str) -> bool {
     !in_path(name).is_empty()
 }
@@ -46,8 +78,13 @@ fn home() -> anyhow::Result<PathBuf> {
         .context("HOME is not set")
 }
 
-/// Write `contents` to a root-owned file with `sudo tee`.
+/// Write `contents` to a root-owned file (with `sudo tee` unless already
+/// root).
 fn sudo_tee(path: &Path, contents: &str) -> anyhow::Result<()> {
+    if red_platform::user::is_root() {
+        return std::fs::write(path, contents)
+            .with_context(|| format!("could not write {}", path.display()));
+    }
     let mut child = Command::new("sudo")
         .arg("tee")
         .arg(path)
@@ -67,8 +104,10 @@ fn sudo_tee(path: &Path, contents: &str) -> anyhow::Result<()> {
 }
 
 /// Trust RED's CA: the macOS login keychain, or on Linux the system store
-/// plus the NSS databases Chrome and Firefox read.
-pub fn trust(ca: &Path) -> anyhow::Result<()> {
+/// plus the NSS databases Chrome and Firefox read. With `user_only`, skip
+/// the Linux system store (the app has `red setup:system` do that part as
+/// root, since it has no terminal for sudo).
+pub fn trust(ca: &Path, user_only: bool) -> anyhow::Result<()> {
     if !ca.is_file() {
         bail!("{} does not exist; is redd running?", ca.display());
     }
@@ -92,37 +131,47 @@ pub fn trust(ca: &Path) -> anyhow::Result<()> {
         );
         return Ok(());
     }
-    trust_system_linux(ca)?;
+    if !user_only {
+        trust_system_linux(ca)?;
+    }
     trust_nss(ca)?;
     Ok(())
 }
 
-fn trust_system_linux(ca: &Path) -> anyhow::Result<()> {
+/// `true` when `dest` already holds the same certificate as `ca`.
+fn same_file(ca: &Path, dest: &Path) -> bool {
+    matches!((std::fs::read(ca), std::fs::read(dest)), (Ok(a), Ok(b)) if a == b)
+}
+
+pub(crate) fn trust_system_linux(ca: &Path) -> anyhow::Result<()> {
     let ca_arg = ca.display().to_string();
     match SystemStore::detect(has_tool) {
+        Some(SystemStore::Debian { dir } | SystemStore::CaTrust { dir })
+            if same_file(ca, &dir.join(ANCHOR_FILE)) =>
+        {
+            println!("The system store already trusts RED's local CA.");
+            return Ok(());
+        }
         Some(SystemStore::Debian { dir }) => {
             let dest = dir.join(ANCHOR_FILE);
             println!(
                 "Adding RED's local CA to the system store as {} (sudo will ask for your password).",
                 dest.display()
             );
-            run(
-                "sudo",
-                &[
-                    "install",
-                    "-m",
-                    "0644",
-                    &ca_arg,
-                    &dest.display().to_string(),
-                ],
-            )?;
-            run("sudo", &["update-ca-certificates"])?;
+            root(&[
+                "install",
+                "-m",
+                "0644",
+                &ca_arg,
+                &dest.display().to_string(),
+            ])?;
+            root(&["update-ca-certificates"])?;
         }
         Some(SystemStore::P11Kit) => {
             println!(
                 "Adding RED's local CA to the system store with `trust anchor` (sudo will ask for your password)."
             );
-            run("sudo", &["trust", "anchor", "--store", &ca_arg])?;
+            root(&["trust", "anchor", "--store", &ca_arg])?;
         }
         Some(SystemStore::CaTrust { dir }) => {
             let dest = dir.join(ANCHOR_FILE);
@@ -130,17 +179,14 @@ fn trust_system_linux(ca: &Path) -> anyhow::Result<()> {
                 "Adding RED's local CA to the system store as {} (sudo will ask for your password).",
                 dest.display()
             );
-            run(
-                "sudo",
-                &[
-                    "install",
-                    "-m",
-                    "0644",
-                    &ca_arg,
-                    &dest.display().to_string(),
-                ],
-            )?;
-            run("sudo", &["update-ca-trust", "extract"])?;
+            root(&[
+                "install",
+                "-m",
+                "0644",
+                &ca_arg,
+                &dest.display().to_string(),
+            ])?;
+            root(&["update-ca-trust", "extract"])?;
         }
         None => {
             println!(
@@ -209,26 +255,17 @@ pub fn untrust(ca: &Path) -> anyhow::Result<()> {
     }
     match SystemStore::detect(has_tool) {
         Some(SystemStore::Debian { dir }) => {
-            run(
-                "sudo",
-                &["rm", "-f", &dir.join(ANCHOR_FILE).display().to_string()],
-            )?;
+            root(&["rm", "-f", &dir.join(ANCHOR_FILE).display().to_string()])?;
             // --fresh also drops the symlinks to the removed file; it lists
             // every certificate, so keep it quiet.
-            run_quiet("sudo", &["update-ca-certificates", "--fresh"])?;
+            root_quiet(&["update-ca-certificates", "--fresh"])?;
         }
         Some(SystemStore::P11Kit) => {
-            run(
-                "sudo",
-                &["trust", "anchor", "--remove", &ca.display().to_string()],
-            )?;
+            root(&["trust", "anchor", "--remove", &ca.display().to_string()])?;
         }
         Some(SystemStore::CaTrust { dir }) => {
-            run(
-                "sudo",
-                &["rm", "-f", &dir.join(ANCHOR_FILE).display().to_string()],
-            )?;
-            run("sudo", &["update-ca-trust", "extract"])?;
+            root(&["rm", "-f", &dir.join(ANCHOR_FILE).display().to_string()])?;
+            root(&["update-ca-trust", "extract"])?;
         }
         None => println!(
             "Remove {} from your system trust store by hand.",
@@ -270,7 +307,7 @@ pub fn install_resolver(tld: &str, port: u16) -> anyhow::Result<()> {
         path.display()
     );
     print!("{contents}");
-    run("sudo", &["mkdir", "-p", &dir.display().to_string()])?;
+    root(&["mkdir", "-p", &dir.display().to_string()])?;
     sudo_tee(&path, &contents)?;
     reload_resolver()?;
     println!("Done. *.{tld} now resolves to this machine.");
@@ -286,7 +323,7 @@ pub fn uninstall_resolver(tld: &str) -> anyhow::Result<()> {
                 "Removing {} (sudo will ask for your password).",
                 path.display()
             );
-            run("sudo", &["rm", &path.display().to_string()])?;
+            root(&["rm", &path.display().to_string()])?;
             reload_resolver()?;
             println!("Removed.");
         }
@@ -306,7 +343,7 @@ pub fn uninstall_resolver(tld: &str) -> anyhow::Result<()> {
 /// `/etc/resolver` itself.
 fn reload_resolver() -> anyhow::Result<()> {
     if cfg!(target_os = "linux") {
-        run("sudo", &["systemctl", "try-restart", "systemd-resolved"])?;
+        root(&["systemctl", "try-restart", "systemd-resolved"])?;
     }
     Ok(())
 }

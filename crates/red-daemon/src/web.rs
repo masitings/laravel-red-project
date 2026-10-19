@@ -305,11 +305,25 @@ async fn run_php(
     }
 
     let xdebug = xdebug_settings(app, version, &parts);
+    // RED's php.ini settings for this version, then Xdebug's.
+    let mut settings = red_core::php_ini::args(
+        app.state
+            .read()
+            .expect("state lock poisoned")
+            .php_settings
+            .get(version)
+            .unwrap_or(&Default::default()),
+    );
+    settings.extend(xdebug.iter().flatten().cloned());
 
     let mut attempt = 0;
     loop {
         attempt += 1;
-        let socket = match app.php.socket_with(version, xdebug.as_deref()).await {
+        let socket = match app
+            .php
+            .socket_with(version, xdebug.is_some(), &settings)
+            .await
+        {
             Ok(socket) => socket,
             Err(err) => {
                 return page(

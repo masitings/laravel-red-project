@@ -98,6 +98,8 @@ pub enum Event {
     /// A runtime download progressed, finished or failed, or a runtime was
     /// removed.
     RuntimesChanged,
+    /// A project creation printed something, moved on, finished or failed.
+    ProjectsChanged,
 }
 
 /// Outcome of one doctor check.
@@ -196,6 +198,35 @@ pub struct PhpInstallInfo {
     /// runs and RED's on-demand switch does not apply.
     #[serde(default)]
     pub xdebug_loaded: bool,
+    /// php.ini settings RED adds for this version (`PUT
+    /// /v1/php/{version}/settings`).
+    #[serde(default)]
+    #[ts(type = "Record<string, string>")]
+    pub settings: std::collections::BTreeMap<String, String>,
+}
+
+/// Body of `PUT /v1/php/{version}/settings`: the whole set, replacing the
+/// previous one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PhpSettingsRequest {
+    #[ts(type = "Record<string, string>")]
+    pub settings: std::collections::BTreeMap<String, String>,
+}
+
+/// Response of `GET /v1/php/{version}/info`: what PHP itself reports, with
+/// RED's settings applied.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PhpVersionInfo {
+    pub version: String,
+    /// The installation's own php.ini, if it reads one.
+    pub ini_file: Option<String>,
+    /// Loaded extensions, sorted.
+    pub extensions: Vec<String>,
+    /// Effective values of the common settings.
+    #[ts(type = "Record<string, string>")]
+    pub values: std::collections::BTreeMap<String, String>,
 }
 
 /// When sites run with Xdebug.
@@ -234,6 +265,44 @@ pub struct PhpListResponse {
 #[ts(export)]
 pub struct XdebugRequest {
     pub mode: XdebugMode,
+}
+
+// ---- settings ------------------------------------------------------------------
+
+/// Response of `GET /v1/settings`: RED's config file, and whether redd runs
+/// with what it says.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SettingsResponse {
+    pub tld: String,
+    pub http_port: u16,
+    pub https_port: u16,
+    pub smtp_port: u16,
+    pub dump_port: u16,
+    pub xdebug_port: u16,
+    pub runtimes_auto_update: bool,
+    /// Where these live (`config.toml`).
+    pub config_file: String,
+    /// The file changed since redd started; restart it to apply.
+    pub restart_required: bool,
+}
+
+/// Body of `PUT /v1/settings`; fields left out stay as they are.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SettingsUpdate {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub smtp_port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub dump_port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub xdebug_port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub runtimes_auto_update: Option<bool>,
 }
 
 // ---- services ------------------------------------------------------------------
@@ -309,6 +378,77 @@ pub struct ServerInstall {
     pub version: String,
     pub full_version: String,
     pub binary: String,
+}
+
+/// What `POST /v1/projects` creates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum ProjectKind {
+    /// `laravel/laravel`.
+    Laravel,
+    /// Laravel's React starter kit.
+    LaravelReact,
+    /// Laravel's Vue starter kit.
+    LaravelVue,
+    /// Laravel's Livewire starter kit.
+    LaravelLivewire,
+    /// The latest WordPress, configured for a MySQL service.
+    Wordpress,
+    /// An empty site with `public/index.php`.
+    Blank,
+}
+
+/// Body of `POST /v1/projects`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ProjectRequest {
+    /// Directory and site name: lowercase letters, digits and `-`.
+    pub name: String,
+    pub kind: ProjectKind,
+    /// Absolute directory to create the project in. Defaults to the first
+    /// parked directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub directory: Option<String>,
+    /// Serve it over HTTPS.
+    #[serde(default)]
+    pub secure: bool,
+    /// Service to create the project's database in (a MySQL or PostgreSQL
+    /// service name). WordPress uses the first MySQL service when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub database: Option<String>,
+}
+
+/// Where a project creation is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum ProjectState {
+    Running,
+    Done,
+    Failed,
+}
+
+/// One project creation started with `POST /v1/projects`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ProjectJob {
+    #[ts(type = "number")]
+    pub id: u64,
+    pub name: String,
+    pub kind: ProjectKind,
+    /// The project directory.
+    pub path: String,
+    pub state: ProjectState,
+    /// What it is doing, e.g. "Running composer create-project".
+    pub step: String,
+    /// The last lines the tools printed.
+    pub log: Vec<String>,
+    /// The site's URL, once it is served.
+    pub url: Option<String>,
+    pub error: Option<String>,
 }
 
 /// Response of `GET /v1/services`.

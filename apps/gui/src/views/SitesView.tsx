@@ -2,7 +2,15 @@ import { open as pickFolder } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { type FormEvent, useState } from "react";
 import type { SiteInfo } from "../api/gen/SiteInfo";
-import { usePhp, useProxies, useProxyActions, useSiteActions, useSites } from "../api/queries";
+import {
+  usePhp,
+  useProjects,
+  useProxies,
+  useProxyActions,
+  useSiteActions,
+  useSites,
+} from "../api/queries";
+import { NewProject } from "../components/NewProject";
 import { Badge, Button, Card, ErrorNote } from "../components/ui";
 
 async function chooseFolder(): Promise<string | null> {
@@ -11,15 +19,34 @@ async function chooseFolder(): Promise<string | null> {
 }
 
 export function SitesView() {
+  // `undefined`: closed; `null`: the form; a number: that creation's progress.
+  const [creating, setCreating] = useState<number | null | undefined>(undefined);
+  const projects = useProjects();
+  const running = projects.data?.filter((j) => j.state === "running") ?? [];
   return (
     <div className="space-y-6">
-      <SitesCard />
+      {creating !== undefined && (
+        <NewProject jobId={creating} onClose={() => setCreating(undefined)} />
+      )}
+      {creating === undefined &&
+        running.map((job) => (
+          <div
+            key={job.id}
+            className="flex items-center justify-between gap-3 rounded-xl border border-stone-200 bg-white px-4 py-3 text-sm dark:border-stone-800 dark:bg-stone-900"
+          >
+            <span>
+              Creating <strong>{job.name}</strong>: {job.step}
+            </span>
+            <Button onClick={() => setCreating(job.id)}>Show</Button>
+          </div>
+        ))}
+      <SitesCard onNew={creating === undefined ? () => setCreating(null) : undefined} />
       <ProxiesCard />
     </div>
   );
 }
 
-function SitesCard() {
+function SitesCard({ onNew }: { onNew?: () => void }) {
   const sites = useSites();
   const actions = useSiteActions();
   const pending = Object.values(actions).find((a) => a.isPending);
@@ -39,6 +66,11 @@ function SitesCard() {
       title="Sites"
       actions={
         <>
+          {onNew && (
+            <Button variant="primary" onClick={onNew}>
+              New site…
+            </Button>
+          )}
           <Button onClick={park} disabled={Boolean(pending)}>
             Park folder…
           </Button>
@@ -51,7 +83,8 @@ function SitesCard() {
       <ErrorNote error={failed?.error ?? sites.error} />
       {sites.data?.length === 0 && (
         <p className="text-sm text-stone-500">
-          No sites yet. Park a folder that contains your projects, or link a single project.
+          No sites yet. Create one with New site, park a folder that contains your projects, or link
+          a single project.
         </p>
       )}
       {sites.data && sites.data.length > 0 && (

@@ -111,7 +111,7 @@ impl RuntimeManager {
             .unwrap_or_else(|| "unsupported".into())
     }
 
-    fn http(&self) -> Result<reqwest::Client, String> {
+    pub(crate) fn http(&self) -> Result<reqwest::Client, String> {
         self.http
             .get_or_init(|| {
                 use rustls_platform_verifier::BuilderVerifierExt;

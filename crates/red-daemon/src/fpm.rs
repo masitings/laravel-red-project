@@ -155,18 +155,18 @@ impl PhpManager {
 
     /// The FastCGI socket for `version`, starting its pool if needed.
     pub async fn socket(&self, version: &str) -> Result<PathBuf, FpmError> {
-        self.socket_with(version, None).await
+        self.socket_with(version, false, &[]).await
     }
 
-    /// The socket of `version`'s pool, or with `xdebug` settings, of its
-    /// Xdebug pool (restarted when the settings changed).
+    /// The socket of `version`'s pool, or its Xdebug pool, started with
+    /// `settings` (`-d` values) and restarted when they changed.
     pub async fn socket_with(
         &self,
         version: &str,
-        xdebug: Option<&[String]>,
+        xdebug: bool,
+        settings: &[String],
     ) -> Result<PathBuf, FpmError> {
-        let key = pool_key(version, xdebug.is_some());
-        let settings = xdebug.unwrap_or_default();
+        let key = pool_key(version, xdebug);
         let mut pools = self.pools.lock().await;
         if let Some(pool) = pools.get_mut(&key) {
             let alive = matches!(pool.child.try_wait(), Ok(None)) && pool.socket.exists();
@@ -174,7 +174,7 @@ impl PhpManager {
                 return Ok(pool.socket.clone());
             }
             if alive {
-                tracing::info!(pool = %key, "Xdebug settings changed; restarting the pool");
+                tracing::info!(pool = %key, "PHP settings changed; restarting the pool");
             } else {
                 tracing::warn!(pool = %key, "PHP-FPM pool exited; starting it again");
             }

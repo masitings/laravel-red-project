@@ -13,6 +13,7 @@ pub mod dumps;
 pub mod fastcgi;
 pub mod fpm;
 pub mod mail;
+pub mod projects;
 pub mod proxy;
 pub mod runtimes;
 pub mod services;
@@ -99,6 +100,8 @@ pub struct AppState {
     /// Change notifications for `GET /v1/events` subscribers.
     pub events: tokio::sync::broadcast::Sender<red_api::Event>,
     state: RwLock<State>,
+    /// New projects being created, and recent ones.
+    pub projects: projects::Projects,
     /// `php` from projects' `red.toml`, keyed by file, with its mtime.
     project_php: std::sync::Mutex<ProjectPhpCache>,
 }
@@ -264,6 +267,7 @@ pub async fn run(paths: Paths, shutdown: impl Future<Output = ()>) -> Result<(),
             .clone()
             .unwrap_or_else(red_helper::default_socket),
         state: RwLock::new(state),
+        projects: projects::Projects::default(),
         project_php: std::sync::Mutex::default(),
     });
     renew_certificates(&app);

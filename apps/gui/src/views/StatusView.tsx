@@ -12,7 +12,7 @@ const tone: Record<CheckStatus, "good" | "warn" | "bad"> = {
   fail: "bad",
 };
 
-export function StatusView({ status }: { status: StatusResponse }) {
+export function StatusView({ status, onSetup }: { status: StatusResponse; onSetup?: () => void }) {
   const doctor = useDoctor();
   const rows: [string, string][] = [
     ["Version", `${status.version} (API v${status.api_version}, ${status.os})`],
@@ -41,9 +41,12 @@ export function StatusView({ status }: { status: StatusResponse }) {
       <Card
         title="Doctor"
         actions={
-          <Button onClick={() => doctor.refetch()} disabled={doctor.isFetching}>
-            Check again
-          </Button>
+          <>
+            {isTauri() && onSetup && <Button onClick={onSetup}>Set up RED…</Button>}
+            <Button onClick={() => doctor.refetch()} disabled={doctor.isFetching}>
+              Check again
+            </Button>
+          </>
         }
       >
         <ul className="space-y-2 text-sm">
@@ -104,8 +107,8 @@ function CliCard() {
         )}
         <ErrorNote error={install.error} />
         <p className="text-xs text-stone-500">
-          Run <code>red setup</code> in a terminal once for ports 80/443, <code>.test</code> DNS and
-          trusted HTTPS.
+          Ports 80/443, DNS and trusted HTTPS: <strong>Set up RED…</strong> below, or{" "}
+          <code>red setup</code> in a terminal.
         </p>
       </div>
     </Card>

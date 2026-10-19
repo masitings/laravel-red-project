@@ -3,7 +3,7 @@ import type { ApiError } from "./gen/ApiError";
 import type { ErrorCode } from "./gen/ErrorCode";
 
 /** Extra error codes produced on the GUI side, before a request reaches redd. */
-export type ClientErrorCode = ErrorCode | "daemon_not_running" | "not_in_tauri";
+export type ClientErrorCode = ErrorCode | "daemon_not_running" | "not_in_tauri" | "cancelled";
 
 /** Error thrown by {@link api}. Mirrors the daemon's `ApiError` body. */
 export class RedApiError extends Error {

@@ -148,9 +148,48 @@ impl Config {
     }
 }
 
+/// Set top-level `key` in the TOML `text` of a config file, keeping the
+/// rest (comments included): replaces `key = …` or appends it.
+pub fn set_key(text: &str, key: &str, value: &toml::Value) -> String {
+    let line = format!("{key} = {value}");
+    let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
+    // Top-level keys come before the first [table].
+    let end = lines
+        .iter()
+        .position(|l| l.trim_start().starts_with('['))
+        .unwrap_or(lines.len());
+    let is_key = |l: &str| {
+        l.split_once('=')
+            .is_some_and(|(k, _)| k.trim() == key && !l.trim_start().starts_with('#'))
+    };
+    match lines[..end].iter().position(|l| is_key(l)) {
+        Some(at) => lines[at] = line,
+        None => lines.insert(end, line),
+    }
+    let mut out = lines.join("\n");
+    out.push('\n');
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sets_keys_keeping_comments() {
+        let text = "# my settings\ntld = \"test\"\nsmtp_port = 2525 # mail\n";
+        let out = set_key(text, "smtp_port", &toml::Value::Integer(2626));
+        assert_eq!(out, "# my settings\ntld = \"test\"\nsmtp_port = 2626\n");
+        let out = set_key(&out, "runtimes_auto_update", &toml::Value::Boolean(true));
+        assert!(out.ends_with("runtimes_auto_update = true\n"));
+        let parsed = Config::parse(&out).unwrap();
+        assert_eq!(parsed.smtp_port, 2626);
+        assert!(parsed.runtimes_auto_update);
+        assert_eq!(
+            set_key("", "dump_port", &toml::Value::Integer(1)),
+            "dump_port = 1\n"
+        );
+    }
 
     #[test]
     fn missing_file_gives_defaults() {

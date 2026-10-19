@@ -7,6 +7,8 @@ import type { LogResponse } from "./gen/LogResponse";
 import type { MailMessage } from "./gen/MailMessage";
 import type { MailSummary } from "./gen/MailSummary";
 import type { PhpListResponse } from "./gen/PhpListResponse";
+import type { ProjectJob } from "./gen/ProjectJob";
+import type { ProjectRequest } from "./gen/ProjectRequest";
 import type { ProxyInfo } from "./gen/ProxyInfo";
 import type { RuntimeKind } from "./gen/RuntimeKind";
 import type { RuntimesResponse } from "./gen/RuntimesResponse";
@@ -27,6 +29,8 @@ export const keys = {
   dumps: ["dumps"] as const,
   logs: ["logs"] as const,
   runtimes: ["runtimes"] as const,
+  projects: ["projects"] as const,
+  paths: ["paths"] as const,
 };
 
 const enc = encodeURIComponent;
@@ -79,7 +83,7 @@ function useAction<TArgs>(
 export function useSiteActions() {
   const refresh = [keys.sites, keys.doctor];
   return {
-    park: useAction((path: string) => api("POST", "/v1/paths", { path }), refresh),
+    park: useAction((path: string) => api("POST", "/v1/paths", { path }), [...refresh, keys.paths]),
     link: useAction((path: string) => api("POST", "/v1/links", { path }), refresh),
     unlink: useAction((name: string) => api("DELETE", `/v1/links/${enc(name)}`), refresh),
     isolate: useAction(
@@ -238,4 +242,25 @@ export function useRuntimeActions() {
       refresh,
     ),
   };
+}
+
+export function useParkedPaths() {
+  return useQuery({ queryKey: keys.paths, queryFn: () => api<string[]>("GET", "/v1/paths") });
+}
+
+export function useProjects() {
+  return useQuery({
+    queryKey: keys.projects,
+    queryFn: () => api<ProjectJob[]>("GET", "/v1/projects"),
+    // Events report progress; polling is a fallback while one runs.
+    refetchInterval: (query) =>
+      query.state.data?.some((j) => j.state === "running") ? 1500 : false,
+  });
+}
+
+export function useCreateProject() {
+  return useAction(
+    (request: ProjectRequest) => api<ProjectJob>("POST", "/v1/projects", request),
+    [keys.projects],
+  );
 }
