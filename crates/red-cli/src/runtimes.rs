@@ -19,8 +19,14 @@ pub(crate) fn parse_kind(text: &str) -> anyhow::Result<RuntimeKind> {
         Some(red_core::runtimes::RuntimeKind::Valkey) => RuntimeKind::Valkey,
         Some(red_core::runtimes::RuntimeKind::Node) => RuntimeKind::Node,
         Some(red_core::runtimes::RuntimeKind::Composer) => RuntimeKind::Composer,
+        Some(red_core::runtimes::RuntimeKind::Mariadb) => RuntimeKind::Mariadb,
+        Some(red_core::runtimes::RuntimeKind::Bun) => RuntimeKind::Bun,
+        Some(red_core::runtimes::RuntimeKind::Cloudflared) => RuntimeKind::Cloudflared,
         None => {
-            bail!("unknown runtime {text:?}; use php, mysql, postgres, valkey, node or composer")
+            bail!(
+                "unknown runtime {text:?}; use php, mysql, mariadb, postgres, valkey, node, bun, \
+                 composer or cloudflared"
+            )
         }
     })
 }
@@ -33,6 +39,9 @@ fn kind_name(kind: RuntimeKind) -> &'static str {
         RuntimeKind::Valkey => "valkey",
         RuntimeKind::Node => "node",
         RuntimeKind::Composer => "composer",
+        RuntimeKind::Mariadb => "mariadb",
+        RuntimeKind::Bun => "bun",
+        RuntimeKind::Cloudflared => "cloudflared",
     }
 }
 
@@ -69,8 +78,11 @@ pub(crate) async fn list(ctx: &Ctx<'_>) -> anyhow::Result<()> {
                 RuntimeKind::Mysql,
                 RuntimeKind::Postgres,
                 RuntimeKind::Valkey,
+                RuntimeKind::Mariadb,
                 RuntimeKind::Node,
+                RuntimeKind::Bun,
                 RuntimeKind::Composer,
+                RuntimeKind::Cloudflared,
             ] {
                 let versions: Vec<String> =
                     r.available
@@ -190,6 +202,9 @@ async fn install_with(
                 job.line
             ),
             RuntimeKind::Composer => println!("`red composer` uses it now."),
+            RuntimeKind::Mariadb => println!("Add it as a service: `red services:add mariadb`."),
+            RuntimeKind::Bun => println!("`red bun` and `red bunx` use it now."),
+            RuntimeKind::Cloudflared => println!("`red share` uses it to share sites."),
         }
     })
 }

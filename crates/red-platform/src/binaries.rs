@@ -44,12 +44,12 @@ const BREW_OPT: [&str; 2] = ["/opt/homebrew/opt", "/usr/local/opt"];
 /// `PATH`.
 pub fn server_candidates(server: Server, data_dir: &Path) -> Vec<PathBuf> {
     let mut found = Vec::new();
-    let own = match server {
-        Server::Mysql => Some(("mysql", "bin/mysqld")),
-        Server::Postgres => Some(("postgres", "bin/postgres")),
-        Server::Redis => Some(("valkey", "bin/valkey-server")),
+    let own: &[(&str, &str)] = match server {
+        Server::Mysql => &[("mysql", "bin/mysqld"), ("mariadb", "bin/mariadbd")],
+        Server::Postgres => &[("postgres", "bin/postgres")],
+        Server::Redis => &[("valkey", "bin/valkey-server")],
     };
-    if let Some((kind, binary)) = own {
+    for (kind, binary) in own {
         for dir in sorted_dirs(&data_dir.join("runtimes").join(kind))
             .into_iter()
             .rev()
@@ -180,6 +180,16 @@ pub fn node_candidates(home: &Path, data_dir: &Path) -> Vec<PathBuf> {
     }
     found.extend(in_path("node"));
     existing_unique(found)
+}
+
+/// `binary` inside the newest line of a runtime RED installed, e.g.
+/// `red_runtime(data, "bun", "bin/bun")`.
+pub fn red_runtime(data_dir: &Path, kind: &str, binary: &str) -> Option<PathBuf> {
+    sorted_dirs(&data_dir.join("runtimes").join(kind))
+        .into_iter()
+        .rev()
+        .map(|dir| dir.join(binary))
+        .find(|p| p.is_file())
 }
 
 /// Composer installed by RED (`<data>/runtimes/composer/*/bin/composer.phar`).

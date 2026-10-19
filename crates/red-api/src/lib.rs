@@ -57,6 +57,14 @@ pub mod endpoints {
     /// progress. `POST`: install one (returns the job).
     /// `DELETE /v1/runtimes/{kind}/{line}`: remove one.
     pub const RUNTIMES: &str = "/v1/runtimes";
+    /// `GET`: captured Laravel queries. `DELETE`: clear them.
+    pub const QUERIES: &str = "/v1/queries";
+    /// `PUT`: switch query capture on or off.
+    pub const QUERY_SETTINGS: &str = "/v1/queries/settings";
+    /// `GET`: shared sites and whether cloudflared is logged in.
+    pub const SHARES: &str = "/v1/shares";
+    /// `POST`: log cloudflared in to a Cloudflare account (for own hostnames).
+    pub const SHARE_LOGIN: &str = "/v1/shares/login";
     /// `GET`: RED's settings. `PUT`: change them (applies after a restart).
     pub const SETTINGS: &str = "/v1/settings";
     /// `GET`: recent project creations. `POST`: create a project.
@@ -102,6 +110,21 @@ pub mod endpoints {
         format!("{SERVICES}/{name}/{action}")
     }
 
+    /// `/v1/services/{name}/databases`: `GET` lists, `POST` creates.
+    pub fn databases(service: &str) -> String {
+        format!("{SERVICES}/{service}/databases")
+    }
+
+    /// `/v1/services/{name}/databases/{db}`: `DELETE` drops.
+    pub fn database(service: &str, db: &str) -> String {
+        format!("{SERVICES}/{service}/databases/{db}")
+    }
+
+    /// `/v1/services/{name}/databases/{db}/{action}`: `backup` or `restore`.
+    pub fn database_action(service: &str, db: &str, action: &str) -> String {
+        format!("{SERVICES}/{service}/databases/{db}/{action}")
+    }
+
     /// `/v1/runtimes/{kind}/{line}`
     pub fn runtime(kind: &str, line: &str) -> String {
         format!("{RUNTIMES}/{kind}/{line}")
@@ -115,6 +138,11 @@ pub mod endpoints {
     /// `/v1/php/{version}/info`: extensions and effective settings.
     pub fn php_info(version: &str) -> String {
         format!("{PHP}/{version}/info")
+    }
+
+    /// `/v1/shares/{site}`: `POST` shares the site, `DELETE` stops sharing.
+    pub fn share(site: &str) -> String {
+        format!("{SHARES}/{site}")
     }
 
     /// `/v1/mail/{id}`

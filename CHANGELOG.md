@@ -89,6 +89,67 @@ All notable changes to RED Project. The format follows
 - Caught HTML mail and dumps read better as text: headings and list items
   end a line.
 
+### Sharing
+- `red share [site]` puts a site on the internet through a Cloudflare
+  Tunnel: a quick `trycloudflare.com` link with no account, or, after
+  `red share:login`, a hostname on your own Cloudflare domain
+  (`--hostname`, a named tunnel `red-<site>` with its DNS record). `red
+  shares` and `red unshare` list and stop them; tunnels stop with redd.
+- RED downloads `cloudflared` itself (new `cloudflared` runtime, checked
+  against the release's SHA-256). Requests through the tunnel reach the
+  site with `HTTPS=on` and no redirect.
+- API `/v1/shares`, `/v1/shares/login` and the `shares_changed` event; the
+  app's site menu has Share publicly / Stop sharing with the link shown
+  under the site.
+
+### Query inspector
+- `red queries:on` captures every SQL query Laravel apps run, with
+  bindings, time, connection, the request and the app file and line that
+  ran it. RED adds a service provider through `auto_prepend_file` and its
+  own copies of Laravel's package and service caches, so the project is
+  not touched; queries travel over the dump port.
+- `red queries [-f]`, `queries:off`, `queries:clear`; API `/v1/queries`
+  with `query_received` / `queries_changed` events. The app's Queries page
+  groups them per request and flags repeated (likely N+1) and slow queries.
+
+### Databases
+- `red db`, `db:create`, `db:drop`, `db:backup` and `db:restore` for MySQL,
+  MariaDB and PostgreSQL services; backups are gzipped dumps under RED's
+  data directory, restores take `.sql` or `.sql.gz`. System databases
+  cannot be dropped.
+- API `/v1/services/{name}/databases` (list, create, drop, backup,
+  restore) and a Databases page in the app.
+
+### Services
+- `red services:set <name>` changes the port, autostart or the server
+  version (same server family, never older, PostgreSQL within its major
+  version); `red services:logs <name>` shows a service's log. The app's
+  service menu has Edit and Show log.
+- MariaDB is a downloadable runtime: RED's own builds for macOS and Linux
+  arm64 (new `build-mariadb.sh` and a MariaDB job in the Runtimes
+  workflow), MariaDB's official tarballs on Linux x86_64.
+  `red services:add mariadb` uses it.
+
+### Doctor
+- Doctor checks carry a fix action. `red doctor --fix` and the app's Fix /
+  Fix all buttons install the helper, the resolver, trust the CA, install
+  PHP, start redd at login or restart failed services.
+
+### Bun
+- `red runtimes:install bun`, then `red bun` and `red bunx`.
+
+### App
+- The whole app now uses shadcn/ui (Radix, Tailwind 4, lucide icons):
+  sidebar navigation, tables, dialogs, menus, toasts, and dark mode that
+  follows the system.
+- An isolated site whose PHP version was removed shows it as "not
+  installed" instead of an empty selector.
+
+### MCP
+- New tools: `list_queries`, `set_query_capture`, `list_databases`,
+  `create_database`, `backup_database`, `list_shares`, `share_site`,
+  `stop_share`.
+
 ## [0.3.0] - 2026-10-19
 
 Self-contained runtimes and updates: RED downloads PHP, databases, Node.js

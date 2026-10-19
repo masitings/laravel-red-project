@@ -143,10 +143,23 @@ async fn accept_loop(
     }
 }
 
-async fn handle(req: Request<Incoming>, app: Arc<AppState>, conn: Conn) -> Response<Body> {
+async fn handle(req: Request<Incoming>, app: Arc<AppState>, mut conn: Conn) -> Response<Body> {
     let host = host_of(&req).unwrap_or_default();
     let state = app.state_snapshot();
-    let Some(target) = sites::resolve_target(&state, &host, &app.config.tld) else {
+    // A shared site's public hostname (Cloudflare Tunnel). Visitors reach
+    // it over HTTPS at Cloudflare, so PHP is told the request is secure.
+    let shared = app
+        .shares
+        .site_for_host(&host)
+        .and_then(|name| sites::find(&state, &name));
+    if shared.is_some() {
+        conn.secure = true;
+    }
+    let target = match shared {
+        Some(site) => Some(Target::Site(site)),
+        None => sites::resolve_target(&state, &host, &app.config.tld),
+    };
+    let Some(target) = target else {
         return page(
             StatusCode::NOT_FOUND,
             "No site here",
@@ -314,6 +327,18 @@ async fn run_php(
             .get(version)
             .unwrap_or(&Default::default()),
     );
+    if app
+        .state
+        .read()
+        .expect("state lock poisoned")
+        .capture_queries
+        && let Some(port) = app.dump_port.get()
+    {
+        match app.queries.prepend_file(*port) {
+            Ok(file) => settings.push(format!("auto_prepend_file={}", file.display())),
+            Err(err) => tracing::warn!(%err, "query inspector unavailable"),
+        }
+    }
     settings.extend(xdebug.iter().flatten().cloned());
 
     let mut attempt = 0;

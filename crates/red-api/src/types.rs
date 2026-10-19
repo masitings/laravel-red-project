@@ -100,6 +100,12 @@ pub enum Event {
     RuntimesChanged,
     /// A project creation printed something, moved on, finished or failed.
     ProjectsChanged,
+    /// A share started, got its URL, stopped or failed.
+    SharesChanged,
+    /// A Laravel site ran a database query (while capture is on).
+    QueryReceived,
+    /// Queries were cleared or capturing was switched on or off.
+    QueriesChanged,
 }
 
 /// Outcome of one doctor check.
@@ -126,6 +132,30 @@ pub struct Check {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub fix: Option<String>,
+    /// What `red doctor --fix` and the app's Fix button do about it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub action: Option<FixAction>,
+}
+
+/// A fix RED can apply by itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum FixAction {
+    /// Install the privileged helper (asks for the password).
+    InstallHelper,
+    /// Start redd through the login agent (also moves it onto the
+    /// helper's ports).
+    StartAtLogin,
+    /// Send `.<tld>` to RED's DNS responder.
+    InstallDns,
+    /// Trust RED's local CA.
+    TrustCa,
+    /// Download RED's PHP build.
+    InstallPhp,
+    /// Restart services that failed.
+    RestartServices,
 }
 
 /// Response of `GET /v1/doctor`.
@@ -265,6 +295,116 @@ pub struct PhpListResponse {
 #[ts(export)]
 pub struct XdebugRequest {
     pub mode: XdebugMode,
+}
+
+// ---- queries -------------------------------------------------------------------
+
+/// One database query a Laravel site ran.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct QueryEntry {
+    #[ts(type = "number")]
+    pub id: u64,
+    /// Unix time in milliseconds.
+    #[ts(type = "number")]
+    pub received: u64,
+    /// The SQL with `?` placeholders.
+    pub sql: String,
+    /// Binding values as SQL literals (`'text'`, `5`, `NULL`).
+    pub bindings: Vec<String>,
+    /// The SQL with the bindings filled in.
+    pub bound: String,
+    /// How long it took, in milliseconds.
+    pub time_ms: f64,
+    pub connection: Option<String>,
+    /// `GET /users`, the request that ran it.
+    pub request: Option<String>,
+    /// Groups the queries of one request.
+    pub request_id: Option<String>,
+    /// Where in the app it came from (the first frame outside vendor/).
+    pub file: Option<String>,
+    pub line: Option<u32>,
+}
+
+/// Response of `GET /v1/queries`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct QueriesResponse {
+    /// When `true`, Laravel sites report their queries to RED.
+    pub enabled: bool,
+    /// Newest last.
+    pub queries: Vec<QueryEntry>,
+}
+
+/// Body of `PUT /v1/queries/settings`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct QuerySettings {
+    pub enabled: bool,
+}
+
+// ---- sharing -------------------------------------------------------------------
+
+/// Where a share is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum ShareState {
+    /// Downloading cloudflared or connecting to Cloudflare.
+    Starting,
+    Running,
+    Failed,
+}
+
+/// A site shared on the internet through a Cloudflare Tunnel.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ShareInfo {
+    pub site: String,
+    /// The public URL, once Cloudflare assigned it.
+    pub url: Option<String>,
+    /// Your own hostname, for a share on your Cloudflare account; `None`
+    /// for a one-off `trycloudflare.com` URL.
+    pub hostname: Option<String>,
+    pub state: ShareState,
+    /// What it is doing, e.g. "Connecting to Cloudflare".
+    pub step: String,
+    pub error: Option<String>,
+    /// Unix time it was started.
+    #[ts(type = "number")]
+    pub started: u64,
+}
+
+/// Response of `GET /v1/shares`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SharesResponse {
+    pub shares: Vec<ShareInfo>,
+    /// cloudflared is logged in to a Cloudflare account (for own hostnames).
+    pub logged_in: bool,
+    /// The cloudflared RED uses, if installed.
+    pub cloudflared: Option<String>,
+}
+
+/// Body of `POST /v1/shares/{site}`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ShareRequest {
+    /// Serve the site at this hostname on your Cloudflare account (needs
+    /// `POST /v1/shares/login` once). Without it, a one-off
+    /// `*.trycloudflare.com` URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub hostname: Option<String>,
+}
+
+/// Response of `POST /v1/shares/login`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ShareLoginResponse {
+    /// Open this in a browser to authorize cloudflared.
+    pub url: Option<String>,
+    pub logged_in: bool,
 }
 
 // ---- settings ------------------------------------------------------------------
@@ -497,6 +637,73 @@ pub struct ServiceUpdate {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub port: Option<u16>,
+    /// Switch to the installed server with this version (same flavor; for
+    /// PostgreSQL the same major version, since data directories do not
+    /// move between majors).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub version: Option<String>,
+    /// Switch to this server binary (same rules as `version`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub binary: Option<String>,
+}
+
+/// A database in a MySQL, MariaDB or PostgreSQL service.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct DatabaseInfo {
+    pub name: String,
+    /// Size on disk in bytes, when the server reports it.
+    #[ts(type = "number | null")]
+    pub size: Option<u64>,
+}
+
+/// Response of `GET /v1/services/{name}/databases`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct DatabasesResponse {
+    pub service: String,
+    pub databases: Vec<DatabaseInfo>,
+    /// Backups of this service's databases, newest first.
+    pub backups: Vec<BackupInfo>,
+}
+
+/// Body of `POST /v1/services/{name}/databases`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct DatabaseRequest {
+    pub name: String,
+}
+
+/// A backup file written by `POST .../databases/{db}/backup`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct BackupInfo {
+    /// Absolute path of the `.sql.gz` file.
+    pub file: String,
+    /// The database it was taken from.
+    pub database: String,
+    #[ts(type = "number")]
+    pub size: u64,
+    /// Unix time it was written.
+    #[ts(type = "number")]
+    pub created: u64,
+}
+
+/// Body of `POST .../databases/{db}/restore`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RestoreRequest {
+    /// A `.sql` or `.sql.gz` file (a RED backup or any SQL dump).
+    pub file: String,
+    /// Create the database first if it does not exist (default `true`).
+    #[serde(default = "yes")]
+    pub create: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 // ---- mail ------------------------------------------------------------------------
@@ -671,6 +878,10 @@ pub enum RuntimeKind {
     Valkey,
     Node,
     Composer,
+    Mariadb,
+    Bun,
+    /// Cloudflare's tunnel client, for sharing sites.
+    Cloudflared,
 }
 
 /// A runtime installed by RED.

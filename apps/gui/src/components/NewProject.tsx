@@ -1,16 +1,39 @@
 import { open as pickFolder } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { CheckCircle2Icon, ExternalLinkIcon, Loader2Icon, XCircleIcon } from "lucide-react";
 import { type FormEvent, useEffect, useRef, useState } from "react";
-import type { ProjectJob } from "../api/gen/ProjectJob";
-import type { ProjectKind } from "../api/gen/ProjectKind";
+import type { ProjectJob } from "@/api/gen/ProjectJob";
+import type { ProjectKind } from "@/api/gen/ProjectKind";
 import {
   useCreateProject,
   useParkedPaths,
   useProjects,
   useServices,
   useStatus,
-} from "../api/queries";
-import { Badge, Button, Card, ErrorNote } from "./ui";
+} from "@/api/queries";
+import { ErrorNote } from "@/components/common";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
+import { cn } from "@/lib/utils";
 
 const kinds: { kind: ProjectKind; label: string; help: string }[] = [
   { kind: "laravel", label: "Laravel", help: "laravel/laravel, SQLite unless you pick a database" },
@@ -20,6 +43,8 @@ const kinds: { kind: ProjectKind; label: string; help: string }[] = [
   { kind: "wordpress", label: "WordPress", help: "Latest WordPress on a MySQL service" },
   { kind: "blank", label: "Empty site", help: "Just public/index.php" },
 ];
+
+const SQLITE = "sqlite";
 
 /** Lowercase letters, digits and `-`, as the daemon accepts. */
 export function projectName(text: string): string {
@@ -51,7 +76,7 @@ export function NewProject({
   const [name, setName] = useState("");
   const [kind, setKind] = useState<ProjectKind>("laravel");
   const [directory, setDirectory] = useState<string | null>(null);
-  const [database, setDatabase] = useState("");
+  const [database, setDatabase] = useState(SQLITE);
   const [secure, setSecure] = useState(true);
   const [jobId, setJobId] = useState<number | null>(initialJob);
 
@@ -60,7 +85,8 @@ export function NewProject({
     (s) => s.kind === "mysql" || (s.kind === "postgres" && kind !== "wordpress"),
   );
   // WordPress needs MySQL; default to the first one.
-  const chosenDb = kind === "wordpress" && database === "" ? (databases[0]?.name ?? "") : database;
+  const chosenDb =
+    kind === "wordpress" && database === SQLITE ? (databases[0]?.name ?? "") : database;
   const job = projects.data?.find((j) => j.id === jobId);
 
   const choose = async () => {
@@ -70,14 +96,14 @@ export function NewProject({
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (!folder || !name) return;
-    const created = (await create.mutateAsync({
+    const created = await create.mutateAsync({
       name,
       kind,
       directory: folder,
       secure,
-      database: chosenDb || undefined,
-    })) as ProjectJob;
-    setJobId(created.id);
+      database: chosenDb && chosenDb !== SQLITE ? chosenDb : undefined,
+    });
+    setJobId((created as ProjectJob).id);
   };
 
   if (jobId !== null) {
@@ -86,107 +112,121 @@ export function NewProject({
 
   const wordpressWithoutMysql = kind === "wordpress" && databases.length === 0;
   return (
-    <Card title="New site">
-      <form onSubmit={submit} className="space-y-4 text-sm">
-        <fieldset>
-          <legend className="mb-2 font-medium">What to create</legend>
-          <div className="grid grid-cols-2 gap-2 lg:grid-cols-3">
-            {kinds.map((k) => (
-              <label
-                key={k.kind}
-                className={`cursor-pointer rounded-lg border p-3 has-[:focus-visible]:outline has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-red-500 ${
-                  kind === k.kind
-                    ? "border-red-600 bg-red-50 dark:bg-red-950/40"
-                    : "border-stone-200 hover:bg-stone-50 dark:border-stone-700 dark:hover:bg-stone-800"
-                }`}
-              >
-                <input
-                  type="radio"
-                  name="project-kind"
-                  value={k.kind}
-                  className="sr-only"
-                  checked={kind === k.kind}
-                  onChange={() => setKind(k.kind)}
-                />
-                <span className="block font-medium">{k.label}</span>
-                <span className="block text-xs text-stone-500">{k.help}</span>
-              </label>
-            ))}
-          </div>
-        </fieldset>
-
-        <label className="block space-y-1">
-          <span className="font-medium">Name</span>
-          <input
-            value={name}
-            onChange={(e) => setName(projectName(e.target.value))}
-            placeholder="my-app"
-            required
-            aria-label="Project name"
-            className="w-full rounded-md border border-stone-300 bg-white px-2 py-1.5 font-mono dark:border-stone-700 dark:bg-stone-950"
-          />
-          <span className="block text-xs text-stone-500">
-            Folder and address: {name || "my-app"}.{tld}
-          </span>
-        </label>
-
-        <div className="space-y-1">
-          <span className="block font-medium">Folder</span>
-          <div className="flex items-center gap-2">
-            <code className="min-w-0 flex-1 truncate rounded-md bg-stone-100 px-2 py-1.5 dark:bg-stone-800">
-              {folder ?? "Choose a folder"}
-            </code>
-            <Button onClick={choose}>Choose…</Button>
-          </div>
-          {folder && !paths.data?.includes(folder) && (
-            <span className="block text-xs text-stone-500">
-              Not a parked folder; RED links the new project by itself.
-            </span>
-          )}
-        </div>
-
-        {kind !== "blank" && (
-          <label className="block space-y-1">
-            <span className="font-medium">Database</span>
-            <select
-              value={chosenDb}
-              onChange={(e) => setDatabase(e.target.value)}
-              aria-label="Database"
-              className="w-full rounded-md border border-stone-300 bg-white px-2 py-1.5 dark:border-stone-700 dark:bg-stone-950"
-            >
-              {kind !== "wordpress" && <option value="">SQLite (a file in the project)</option>}
-              {databases.map((s) => (
-                <option key={s.name} value={s.name}>
-                  {s.name} ({s.flavor ?? s.kind} on port {s.port})
-                </option>
+    <Card>
+      <CardHeader>
+        <CardTitle>New site</CardTitle>
+        <CardDescription>
+          RED creates the project, its database and mail settings, and serves it right away.
+        </CardDescription>
+      </CardHeader>
+      <form onSubmit={submit}>
+        <CardContent className="space-y-6">
+          <fieldset className="space-y-2">
+            <legend className="mb-2 text-sm font-medium">What to create</legend>
+            <div className="grid grid-cols-2 gap-2 lg:grid-cols-3">
+              {kinds.map((k) => (
+                <label
+                  key={k.kind}
+                  className={cn(
+                    "cursor-pointer rounded-lg border p-3 text-sm transition-colors has-[:focus-visible]:ring-[3px] has-[:focus-visible]:ring-ring/50",
+                    kind === k.kind
+                      ? "border-primary bg-primary/5"
+                      : "hover:bg-accent hover:text-accent-foreground",
+                  )}
+                >
+                  <input
+                    type="radio"
+                    name="project-kind"
+                    value={k.kind}
+                    className="sr-only"
+                    checked={kind === k.kind}
+                    onChange={() => setKind(k.kind)}
+                  />
+                  <span className="block font-medium">{k.label}</span>
+                  <span className="block text-xs text-muted-foreground">{k.help}</span>
+                </label>
               ))}
-            </select>
-            {wordpressWithoutMysql && (
-              <span className="block text-xs text-amber-700 dark:text-amber-400">
-                WordPress needs MySQL. Add a MySQL service on the Services page first.
-              </span>
+            </div>
+          </fieldset>
+
+          <div className="grid gap-6 md:grid-cols-2">
+            <div className="space-y-2">
+              <Label htmlFor="project-name">Name</Label>
+              <Input
+                id="project-name"
+                value={name}
+                onChange={(e) => setName(projectName(e.target.value))}
+                placeholder="my-app"
+                required
+                aria-label="Project name"
+                className="font-mono"
+              />
+              <p className="text-xs text-muted-foreground">
+                Folder and address: {name || "my-app"}.{tld}
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Folder</Label>
+              <div className="flex items-center gap-2">
+                <code className="flex h-9 min-w-0 flex-1 items-center truncate rounded-md border bg-muted/50 px-3 text-xs">
+                  {folder ?? "Choose a folder"}
+                </code>
+                <Button type="button" variant="outline" onClick={choose}>
+                  Choose…
+                </Button>
+              </div>
+              {folder && !paths.data?.includes(folder) && (
+                <p className="text-xs text-muted-foreground">
+                  Not a parked folder; RED links the new project by itself.
+                </p>
+              )}
+            </div>
+
+            {kind !== "blank" && (
+              <div className="space-y-2">
+                <Label>Database</Label>
+                <Select value={chosenDb} onValueChange={setDatabase}>
+                  <SelectTrigger className="w-full" aria-label="Database">
+                    <SelectValue placeholder="No MySQL service" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {kind !== "wordpress" && (
+                      <SelectItem value={SQLITE}>SQLite (a file in the project)</SelectItem>
+                    )}
+                    {databases.map((s) => (
+                      <SelectItem key={s.name} value={s.name}>
+                        {s.name} ({s.flavor ?? s.kind} on port {s.port})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {wordpressWithoutMysql && (
+                  <p className="text-xs text-warning">
+                    WordPress needs MySQL. Add a MySQL service on the Services page first.
+                  </p>
+                )}
+              </div>
             )}
-          </label>
-        )}
 
-        <label className="flex items-center gap-2">
-          <input type="checkbox" checked={secure} onChange={(e) => setSecure(e.target.checked)} />
-          Serve over HTTPS
-        </label>
-
-        <ErrorNote error={create.error} />
-        <div className="flex justify-end gap-2">
-          <Button variant="ghost" onClick={onClose}>
+            <div className="flex items-center gap-3 self-end pb-2">
+              <Switch id="project-https" checked={secure} onCheckedChange={setSecure} />
+              <Label htmlFor="project-https">Serve over HTTPS</Label>
+            </div>
+          </div>
+          <ErrorNote error={create.error} />
+        </CardContent>
+        <CardFooter className="mt-6 justify-end gap-2">
+          <Button type="button" variant="ghost" onClick={onClose}>
             Cancel
           </Button>
           <Button
             type="submit"
-            variant="primary"
             disabled={!name || !folder || create.isPending || wordpressWithoutMysql}
           >
             Create
           </Button>
-        </div>
+        </CardFooter>
       </form>
     </Card>
   );
@@ -207,51 +247,62 @@ function Progress({
   useEffect(() => {
     if (lines && log.current) log.current.scrollTop = log.current.scrollHeight;
   }, [lines]);
-  if (!job) return <Card title="New site">Starting…</Card>;
+  if (!job) {
+    return (
+      <Card>
+        <CardContent className="text-sm text-muted-foreground">Starting…</CardContent>
+      </Card>
+    );
+  }
   return (
-    <Card
-      title={`Creating ${job.name}`}
-      actions={
-        job.state === "running" ? (
-          <Badge>{job.step}</Badge>
-        ) : job.state === "done" ? (
-          <Badge tone="good">Ready</Badge>
-        ) : (
-          <Badge tone="bad">Failed</Badge>
-        )
-      }
-    >
-      <div className="space-y-3 text-sm">
-        <p className="truncate text-stone-500" title={job.path}>
+    <Card>
+      <CardHeader>
+        <CardTitle>Creating {job.name}</CardTitle>
+        <CardDescription className="truncate" title={job.path}>
           {job.path}
-        </p>
+        </CardDescription>
+        <CardAction>
+          {job.state === "running" ? (
+            <Badge variant="secondary">
+              <Loader2Icon className="animate-spin" /> {job.step}
+            </Badge>
+          ) : job.state === "done" ? (
+            <Badge variant="success">
+              <CheckCircle2Icon /> Ready
+            </Badge>
+          ) : (
+            <Badge variant="destructive">
+              <XCircleIcon /> Failed
+            </Badge>
+          )}
+        </CardAction>
+      </CardHeader>
+      <CardContent className="space-y-3">
         <pre
           ref={log}
           role="log"
           aria-label="Output"
-          className="h-56 overflow-auto rounded-md bg-stone-950 p-3 font-mono text-xs leading-relaxed text-stone-200"
+          className="h-60 overflow-auto rounded-md bg-neutral-950 p-3 font-mono text-xs leading-relaxed text-neutral-200"
         >
           {job.log.join("\n") || " "}
         </pre>
-        {job.state === "failed" && (
-          <p role="alert" className="text-red-700 dark:text-red-400">
-            {job.error}
-          </p>
+        {job.state === "failed" && <ErrorNote error={new Error(job.error ?? "failed")} />}
+      </CardContent>
+      <CardFooter className="justify-end gap-2">
+        {job.state !== "running" && (
+          <Button variant="ghost" onClick={onAnother}>
+            {job.state === "failed" ? "Try again" : "Create another"}
+          </Button>
         )}
-        <div className="flex justify-end gap-2">
-          {job.state !== "running" && (
-            <Button variant="ghost" onClick={onAnother}>
-              {job.state === "failed" ? "Try again" : "Create another"}
-            </Button>
-          )}
-          <Button onClick={onClose}>{job.state === "running" ? "Hide" : "Close"}</Button>
-          {job.url && (
-            <Button variant="primary" onClick={() => job.url && openUrl(job.url)}>
-              Open {job.url.replace(/^https?:\/\//, "")}
-            </Button>
-          )}
-        </div>
-      </div>
+        <Button variant="outline" onClick={onClose}>
+          {job.state === "running" ? "Hide" : "Close"}
+        </Button>
+        {job.url && (
+          <Button onClick={() => job.url && openUrl(job.url)}>
+            <ExternalLinkIcon /> Open {job.url.replace(/^https?:\/\//, "")}
+          </Button>
+        )}
+      </CardFooter>
     </Card>
   );
 }

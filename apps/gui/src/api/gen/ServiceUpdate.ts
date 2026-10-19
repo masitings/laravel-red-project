@@ -3,4 +3,14 @@
 /**
  * Body of `PUT /v1/services/{name}`; absent fields stay unchanged.
  */
-export type ServiceUpdate = { autostart?: boolean, port?: number, };
+export type ServiceUpdate = { autostart?: boolean, port?: number, 
+/**
+ * Switch to the installed server with this version (same flavor; for
+ * PostgreSQL the same major version, since data directories do not
+ * move between majors).
+ */
+version?: string, 
+/**
+ * Switch to this server binary (same rules as `version`).
+ */
+binary?: string, };

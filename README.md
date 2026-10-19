@@ -110,6 +110,7 @@ red proxies
 red unproxy vite
 
 red doctor                      # what is set up, and how to fix what isn't
+red doctor --fix                # fix what it can (asks for your password once)
 red events                      # watch what the daemon is doing
 ```
 
@@ -145,7 +146,7 @@ extensions.
 
 RED runs MySQL or MariaDB, PostgreSQL, and Redis or Valkey, each with its
 own data directory, port and log, bound to 127.0.0.1. It downloads MySQL,
-PostgreSQL and Valkey itself, or uses what Homebrew installed.
+MariaDB, PostgreSQL and Valkey itself, or uses what Homebrew installed.
 
 ```sh
 red runtimes                    # what RED installed and can download
@@ -157,11 +158,60 @@ red services:add postgres --name pg15 --server-version 15 --port 5433
 red services                    # status, plus the servers RED found
 red services:stop mysql         # also :start, :restart, :remove
 red services:env mysql          # DB_* lines for your .env
+red services:set mysql --port 3307 --server-version 8.4.6
+red services:logs mysql -f
 ```
 
 Services start with redd (unless added with `--no-autostart`) and are
 restarted if they crash. MySQL/MariaDB and PostgreSQL get a `root` user with
-no password, like Laravel's defaults.
+no password, like Laravel's defaults. `services:set` changes the port, the
+autostart flag or the server version (only newer versions of the same
+server, so the data directory stays readable; PostgreSQL keeps its major
+version) and restarts the service.
+
+```sh
+red db                          # databases and their size
+red db:create shop
+red db:backup shop              # gzipped dump in RED's data directory
+red db:restore shop dump.sql.gz # .sql or .sql.gz, creates the database
+red db:drop shop                # asks you to type the name
+```
+
+`--service` picks the service when there is more than one. The app's
+Databases page does the same, with the list of backups.
+
+### Sharing a site
+
+`red share` puts a site on the internet through a
+[Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/),
+so a client or a webhook can reach it. RED downloads `cloudflared` the
+first time.
+
+```sh
+red share                       # https://<random>.trycloudflare.com, no account
+red share:login                 # once, to use a domain on your Cloudflare account
+red share shop --hostname shop.example.com
+red shares
+red unshare shop
+```
+
+The site sees HTTPS (`HTTPS=on`) and its usual document root; the tunnel
+stops when you unshare or redd stops. Quick links need no account and
+change every time; with `--hostname` RED creates a named tunnel `red-<site>`
+and the DNS record for it. In the app: a site's menu → **Share publicly**.
+
+### Query inspector
+
+```sh
+red queries:on                  # capture SQL from every Laravel request
+red queries -f                  # follow them: SQL with bindings, time, file:line
+red queries:off
+```
+
+While capture is on, RED loads a small service provider into Laravel apps
+through PHP's `auto_prepend_file` (nothing is written to the project) that
+sends each query to redd. The app's Queries page groups them per request
+and flags repeated queries (likely N+1) and slow ones (100 ms or more).
 
 ### Xdebug
 
@@ -194,6 +244,7 @@ red dumps:on                    # dump()/dd() output goes to RED, not the page
 red dumps --follow
 red logs                        # RED, service, PHP-FPM and site logs
 red logs site:blog:storage/logs/laravel.log -f
+red logs service:mysql -f
 ```
 
 Point Laravel at the mail catcher with `MAIL_MAILER=smtp`, `MAIL_HOST=127.0.0.1`,
@@ -221,7 +272,9 @@ Tools: `status`, `doctor`, `list_sites`, `site_for_path`, `link_site`,
 `secure_site`, `php_versions`, `set_xdebug`, `list_logs`, `read_log`,
 `list_mail`, `read_mail`, `clear_mail`, `list_dumps`, `clear_dumps`,
 `list_services`, `service_action`, `create_project`, `list_projects`,
-`list_runtimes`, `list_proxies`. Each is
+`list_runtimes`, `list_proxies`, `list_queries`, `set_query_capture`,
+`list_databases`, `create_database`, `backup_database`, `list_shares`,
+`share_site`, `stop_share`. Each is
 marked read-only or not, so clients can ask before changes; nothing runs
 outside RED's own API.
 
@@ -242,9 +295,13 @@ HTTPS, starts the services and prints the `.env` lines to use. `red php`,
 `red composer`, `red node`, `red npm` and `red npx` run the versions the
 project asks for (Node.js from nvm, fnm, Volta, asdf, mise or Homebrew;
 `.nvmrc` works too), and `eval "$(red env)"` puts them first on your PATH.
+`red bun` and `red bunx` run the Bun RED downloaded
+(`red runtimes:install bun`).
 
 Every command accepts `--json`. The desktop app offers the same: sites, PHP
-versions, proxies, services, mail, dumps, logs and the doctor checks.
+versions, proxies, services, databases, queries, sharing, mail, dumps, logs
+and the doctor checks (with a Fix button), built with shadcn/ui and
+following the system's light or dark mode.
 
 RED's CA is restricted (X.509 Name Constraints) to `.test` and
 `localhost`, so it cannot issue certificates for real domains.
@@ -259,10 +316,13 @@ static sites.
 |---------|--------|
 | PHP | Built by RED's [Runtimes workflow](.github/workflows/runtimes.yml) with static-php-cli; static-php-cli's own builds for versions RED has not built yet |
 | Valkey | Built by RED's Runtimes workflow |
+| MariaDB | Built by RED's Runtimes workflow (macOS, Linux arm64); MariaDB's official tarballs on Linux x86_64 |
 | PostgreSQL | zonky's relocatable builds on Maven Central (SHA-256 checked) |
 | MySQL | Oracle's official tarballs (checksums pinned in RED) |
 | Node.js | nodejs.org (SHA-256 checked) |
 | Composer | getcomposer.org (SHA-256 checked) |
+| Bun | Bun's GitHub releases (SHA-256 checked) |
+| cloudflared | Cloudflare's GitHub releases (SHA-256 checked), for `red share` |
 
 `red runtimes` shows which installed runtimes have a newer build and
 `red runtimes:update` installs them (services using them restart on the new
@@ -335,7 +395,7 @@ Where RED keeps its files:
 | M2 Dev tools ✓ | MySQL/PostgreSQL/Valkey, mail catcher, dumps, log viewer, `red.toml`, Node per site, desktop app bundle | v0.2.0 |
 | M3 Distribution | Downloadable runtimes ✓, runtime and app updates ✓, signing/notarization and Homebrew tap in CI ✓, Linux DNS/trust/packages ✓ | Signed releases on both OSes |
 | M3.5 Everyday app ✓ | Setup in the app, menu bar, new projects (Laravel, starter kits, WordPress), Settings, php.ini per version | v0.4.0 |
-| M4 Advanced | On-demand Xdebug ✓, MCP server ✓, sharing/tunnels, profiler, git workspaces | v1.0.0 |
+| M4 Advanced | On-demand Xdebug ✓, MCP server ✓, sharing/tunnels ✓, query inspector ✓, database tools ✓, profiler, git workspaces | v1.0.0 |
 
 ## Contributing
 

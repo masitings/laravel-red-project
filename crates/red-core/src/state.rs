@@ -29,6 +29,8 @@ pub struct State {
     pub services: BTreeMap<String, crate::ServiceConfig>,
     /// Send `dump()` output from sites to RED instead of the page.
     pub capture_dumps: bool,
+    /// Have Laravel sites report their database queries to RED.
+    pub capture_queries: bool,
     /// When sites run with Xdebug (see [`crate::xdebug`]).
     pub xdebug: crate::xdebug::XdebugMode,
     /// php.ini settings per PHP version (`"8.4"` → `memory_limit` → `1G`),

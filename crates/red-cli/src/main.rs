@@ -11,6 +11,7 @@ use red_api::{
 use red_platform::Paths;
 use serde::Serialize;
 
+mod db;
 mod inspect;
 mod install;
 mod mcp;
@@ -18,6 +19,7 @@ mod new;
 mod project;
 mod runtimes;
 mod services;
+mod share;
 mod system;
 mod tools;
 mod uninstall;
@@ -185,7 +187,11 @@ enum Command {
     /// (Re)start redd, e.g. after installing a new version.
     Restart,
     /// Check that everything RED needs is in place.
-    Doctor,
+    Doctor {
+        /// Fix what RED can fix by itself (may ask for your password).
+        #[arg(long)]
+        fix: bool,
+    },
     /// One-time setup: helper, autostart, DNS and CA trust.
     Setup,
     /// Undo `red setup`: DNS, CA trust, autostart, the helper and the
@@ -246,6 +252,72 @@ enum Command {
     /// Print the .env settings for a service.
     #[command(name = "services:env")]
     ServicesEnv { name: String },
+    /// Change a service: its port, server version or autostart.
+    #[command(name = "services:set")]
+    ServicesSet {
+        name: String,
+        /// New port on 127.0.0.1.
+        #[arg(long)]
+        port: Option<u16>,
+        /// Switch to the installed server with this version (same flavor).
+        #[arg(long = "server-version", value_name = "VERSION")]
+        server_version: Option<String>,
+        /// Switch to this server binary.
+        #[arg(long)]
+        binary: Option<String>,
+        /// Start it whenever redd starts (true or false).
+        #[arg(long)]
+        autostart: Option<bool>,
+    },
+    /// List the databases in a service (and its backups).
+    Db {
+        /// MySQL, MariaDB or PostgreSQL service (default: the only one).
+        #[arg(long)]
+        service: Option<String>,
+    },
+    /// Create a database.
+    #[command(name = "db:create")]
+    DbCreate {
+        name: String,
+        #[arg(long)]
+        service: Option<String>,
+    },
+    /// Drop a database and all its data.
+    #[command(name = "db:drop")]
+    DbDrop {
+        name: String,
+        #[arg(long)]
+        service: Option<String>,
+        /// Do not ask.
+        #[arg(short, long)]
+        yes: bool,
+    },
+    /// Back up a database to a .sql.gz file in RED's data directory.
+    #[command(name = "db:backup")]
+    DbBackup {
+        name: String,
+        #[arg(long)]
+        service: Option<String>,
+    },
+    /// Load a .sql or .sql.gz dump into a database (created if missing).
+    #[command(name = "db:restore")]
+    DbRestore {
+        name: String,
+        file: PathBuf,
+        #[arg(long)]
+        service: Option<String>,
+    },
+    /// Show a service's log.
+    #[command(name = "services:logs")]
+    ServicesLogs {
+        name: String,
+        /// Number of entries to show.
+        #[arg(short = 'n', long, default_value_t = 50)]
+        lines: usize,
+        /// Keep printing new entries.
+        #[arg(short, long)]
+        follow: bool,
+    },
     /// Set up the project in the current directory from its red.toml
     /// (created on first run): link, HTTPS, PHP, services.
     Init,
@@ -276,6 +348,18 @@ enum Command {
     /// Run npx from the project's Node.js version.
     #[command(disable_help_flag = true, disable_version_flag = true)]
     Npx {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<std::ffi::OsString>,
+    },
+    /// Run Bun (RED's copy, installed on first use).
+    #[command(disable_help_flag = true, disable_version_flag = true)]
+    Bun {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<std::ffi::OsString>,
+    },
+    /// Run bunx (`bun x`).
+    #[command(disable_help_flag = true, disable_version_flag = true)]
+    Bunx {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<std::ffi::OsString>,
     },
@@ -330,8 +414,39 @@ enum Command {
         #[arg(long)]
         db: Option<String>,
     },
+    /// Share a site on the internet through Cloudflare Tunnel (default: the
+    /// site in the current directory).
+    Share {
+        site: Option<String>,
+        /// Use this hostname on your Cloudflare account (after `red share:login`)
+        /// instead of a one-off trycloudflare.com URL.
+        #[arg(long)]
+        hostname: Option<String>,
+    },
+    /// Stop sharing a site.
+    Unshare { site: Option<String> },
+    /// List shared sites.
+    Shares,
+    /// Log cloudflared in to your Cloudflare account, for own hostnames.
+    #[command(name = "share:login")]
+    ShareLogin,
     /// Serve RED to AI agents (Claude Code, Cursor, …) as an MCP server on stdio.
     Mcp,
+    /// Show the database queries Laravel sites ran.
+    Queries {
+        /// Keep printing new queries.
+        #[arg(short, long)]
+        follow: bool,
+    },
+    /// Have Laravel sites report their database queries to RED.
+    #[command(name = "queries:on")]
+    QueriesOn,
+    /// Stop capturing queries.
+    #[command(name = "queries:off")]
+    QueriesOff,
+    /// Delete the captured queries.
+    #[command(name = "queries:clear")]
+    QueriesClear,
     /// List logs, or show one: RED, services, PHP-FPM and site logs.
     Logs {
         /// Log id from `red logs`.
@@ -734,8 +849,16 @@ async fn run(cli: &Cli) -> anyhow::Result<()> {
             let status = ctx.client.status().await?;
             println!("redd {} is running (pid {}).", status.version, status.pid);
         }
-        Command::Doctor => {
-            let report: DoctorReport = ctx.client.get(endpoints::DOCTOR).await?;
+        Command::Doctor { fix } => {
+            let mut report: DoctorReport = ctx.client.get(endpoints::DOCTOR).await?;
+            if *fix {
+                if fix_checks(&ctx, &paths, &report).await? {
+                    report = ctx.client.get(endpoints::DOCTOR).await?;
+                    println!();
+                } else if !cli.json {
+                    println!("Nothing RED can fix by itself.\n");
+                }
+            }
             ctx.output(&report, print_doctor)?;
             if report.checks.iter().any(|c| c.status == CheckStatus::Fail) {
                 std::process::exit(1);
@@ -829,8 +952,53 @@ async fn run(cli: &Cli) -> anyhow::Result<()> {
             services::remove(&ctx, name, *delete_data).await?
         }
         Command::ServicesEnv { name } => services::env(&ctx, name).await?,
+        Command::ServicesSet {
+            name,
+            port,
+            server_version,
+            binary,
+            autostart,
+        } => {
+            services::set(
+                &ctx,
+                name,
+                services::SetArgs {
+                    port: *port,
+                    version: server_version.clone(),
+                    binary: binary.clone(),
+                    autostart: *autostart,
+                },
+            )
+            .await?
+        }
+        Command::Db { service } => db::list(&ctx, service.as_deref()).await?,
+        Command::DbCreate { name, service } => db::create(&ctx, name, service.as_deref()).await?,
+        Command::DbDrop { name, service, yes } => {
+            db::drop(&ctx, name, service.as_deref(), *yes).await?
+        }
+        Command::DbBackup { name, service } => db::backup(&ctx, name, service.as_deref()).await?,
+        Command::DbRestore {
+            name,
+            file,
+            service,
+        } => db::restore(&ctx, name, file, service.as_deref()).await?,
+        Command::ServicesLogs {
+            name,
+            lines,
+            follow,
+        } => inspect::logs(&ctx, Some(&format!("service:{name}")), *lines, *follow).await?,
         Command::Init => project::init(&ctx).await?,
         Command::Mcp => mcp::serve(ctx.client.clone()).await?,
+        Command::Share { site, hostname } => {
+            let site = ctx.site_name(site).await?;
+            share::share(&ctx, &site, hostname.clone()).await?
+        }
+        Command::Unshare { site } => {
+            let site = ctx.site_name(site).await?;
+            share::unshare(&ctx, &site).await?
+        }
+        Command::Shares => share::list(&ctx).await?,
+        Command::ShareLogin => share::login(&ctx).await?,
         Command::New {
             name,
             kind,
@@ -847,6 +1015,8 @@ async fn run(cli: &Cli) -> anyhow::Result<()> {
         Command::Node { args } => tools::node(&ctx, "node", args).await?,
         Command::Npm { args } => tools::node(&ctx, "npm", args).await?,
         Command::Npx { args } => tools::node(&ctx, "npx", args).await?,
+        Command::Bun { args } => tools::bun(&ctx, false, args).await?,
+        Command::Bunx { args } => tools::bun(&ctx, true, args).await?,
         Command::Env => tools::env(&ctx).await?,
         Command::Mail { mailbox } => inspect::mail_list(&ctx, mailbox.as_deref()).await?,
         Command::MailShow { id } => inspect::mail_show(&ctx, id).await?,
@@ -855,6 +1025,10 @@ async fn run(cli: &Cli) -> anyhow::Result<()> {
         Command::DumpsOn => inspect::dumps_set(&ctx, true).await?,
         Command::DumpsOff => inspect::dumps_set(&ctx, false).await?,
         Command::DumpsClear => inspect::dumps_clear(&ctx).await?,
+        Command::Queries { follow } => inspect::queries(&ctx, *follow).await?,
+        Command::QueriesOn => inspect::queries_set(&ctx, true).await?,
+        Command::QueriesOff => inspect::queries_set(&ctx, false).await?,
+        Command::QueriesClear => inspect::queries_clear(&ctx).await?,
         Command::Logs { id, lines, follow } => {
             inspect::logs(&ctx, id.as_deref(), *lines, *follow).await?
         }
@@ -902,6 +1076,79 @@ fn absolute_dir(path: Option<&Path>) -> anyhow::Result<PathBuf> {
 }
 
 /// The site whose path is `dir` or an ancestor of it (deepest match wins).
+/// `red doctor --fix`: apply the fixes the report offers, in an order that
+/// works (helper before restarting redd, redd before DNS). Returns whether
+/// it did anything.
+async fn fix_checks(ctx: &Ctx<'_>, paths: &Paths, report: &DoctorReport) -> anyhow::Result<bool> {
+    use red_api::FixAction;
+    let wanted: Vec<FixAction> = report.checks.iter().filter_map(|c| c.action).collect();
+    let order = [
+        FixAction::InstallHelper,
+        FixAction::StartAtLogin,
+        FixAction::InstallPhp,
+        FixAction::InstallDns,
+        FixAction::TrustCa,
+        FixAction::RestartServices,
+    ];
+    let mut did = false;
+    for action in order {
+        // Installing the helper needs redd restarted to use it.
+        let needed = wanted.contains(&action)
+            || (action == FixAction::StartAtLogin && wanted.contains(&FixAction::InstallHelper));
+        if !needed {
+            continue;
+        }
+        did = true;
+        let result = match action {
+            FixAction::InstallHelper => {
+                println!("Fixing: privileged helper (ports 80 and 443)");
+                install::install_helper(red_platform::user::current_uid())
+            }
+            FixAction::StartAtLogin => {
+                println!("Fixing: start redd at login");
+                ctx.stop_unmanaged_daemon(paths).await;
+                match install::install_agent(&paths.log_dir) {
+                    Ok(()) => ctx.wait_for_daemon().await,
+                    Err(err) => Err(err),
+                }
+            }
+            FixAction::InstallPhp => {
+                println!("Fixing: install PHP");
+                runtimes::install(ctx, red_api::RuntimeKind::Php, "").await
+            }
+            FixAction::InstallDns => {
+                println!("Fixing: DNS for .{}", ctx.client.status().await?.tld);
+                ctx.dns(true).await
+            }
+            FixAction::TrustCa => {
+                println!("Fixing: trust the local CA");
+                let status = ctx.client.status().await?;
+                system::trust(Path::new(&status.paths.ca_cert), false)
+            }
+            FixAction::RestartServices => {
+                println!("Fixing: restart failed services");
+                let services: red_api::ServicesResponse =
+                    ctx.client.get(endpoints::SERVICES).await?;
+                let mut result = Ok(());
+                for s in services
+                    .services
+                    .iter()
+                    .filter(|s| s.status == red_api::ServiceStatus::Failed)
+                {
+                    if let Err(err) = services::action(ctx, &s.name, "restart").await {
+                        result = Err(err);
+                    }
+                }
+                result
+            }
+        };
+        if let Err(err) = result {
+            eprintln!("  could not fix it: {err:#}");
+        }
+    }
+    Ok(did)
+}
+
 /// `red setup:system`: everything in setup that needs root, so the app can
 /// ask for the password once.
 fn setup_system(uid: u32, ca: Option<&Path>) -> anyhow::Result<()> {

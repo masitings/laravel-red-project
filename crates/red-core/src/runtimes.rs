@@ -8,6 +8,10 @@
 //! * MySQL: Oracle's official tarballs.
 //! * Node.js: the official builds from nodejs.org.
 //! * Composer: the official `composer.phar` from getcomposer.org.
+//! * MariaDB: RED's own builds from the manifest, else the official Linux
+//!   x86-64 tarballs from mariadb.org.
+//! * Bun and cloudflared: the latest GitHub release of each project, checked
+//!   against the digest GitHub publishes for every file.
 //!
 //! This module only decides *what* to download: catalogs, versions and
 //! archive layouts. The daemon fetches, verifies and unpacks.
@@ -28,16 +32,22 @@ pub enum RuntimeKind {
     Valkey,
     Node,
     Composer,
+    Mariadb,
+    Bun,
+    Cloudflared,
 }
 
 impl RuntimeKind {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 9] = [
         Self::Php,
         Self::Mysql,
         Self::Postgres,
         Self::Valkey,
         Self::Node,
         Self::Composer,
+        Self::Mariadb,
+        Self::Bun,
+        Self::Cloudflared,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -48,6 +58,9 @@ impl RuntimeKind {
             Self::Valkey => "valkey",
             Self::Node => "node",
             Self::Composer => "composer",
+            Self::Mariadb => "mariadb",
+            Self::Bun => "bun",
+            Self::Cloudflared => "cloudflared",
         }
     }
 
@@ -59,6 +72,9 @@ impl RuntimeKind {
             "valkey" | "redis" => Some(Self::Valkey),
             "node" | "nodejs" | "node.js" => Some(Self::Node),
             "composer" => Some(Self::Composer),
+            "mariadb" => Some(Self::Mariadb),
+            "bun" => Some(Self::Bun),
+            "cloudflared" | "tunnel" => Some(Self::Cloudflared),
             _ => None,
         }
     }
@@ -130,6 +146,7 @@ impl Platform {
 pub enum Format {
     TarGz,
     TarXz,
+    Zip,
     /// A Java archive (zip) holding one `.txz` (tar + xz).
     JarTxz,
     /// Not an archive: the file itself (used with [`Layout::Single`]).
@@ -687,6 +704,203 @@ pub fn composer_release(versions: &ComposerVersions, wanted: &str) -> Option<Rel
     })
 }
 
+// ---- GitHub releases: Bun, cloudflared ----------------------------------------------
+
+/// Latest release of Bun, from GitHub's API.
+pub const BUN_RELEASE_URL: &str = "https://api.github.com/repos/oven-sh/bun/releases/latest";
+/// Latest release of cloudflared, from GitHub's API.
+pub const CLOUDFLARED_RELEASE_URL: &str =
+    "https://api.github.com/repos/cloudflare/cloudflared/releases/latest";
+
+/// The parts of a GitHub release RED reads.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct GithubRelease {
+    pub tag_name: String,
+    #[serde(default)]
+    pub assets: Vec<GithubAsset>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct GithubAsset {
+    pub name: String,
+    pub browser_download_url: String,
+    /// `sha256:<hex>`, published by GitHub for each file.
+    #[serde(default)]
+    pub digest: Option<String>,
+}
+
+impl GithubRelease {
+    fn asset(&self, name: &str) -> Option<&GithubAsset> {
+        self.assets.iter().find(|a| a.name == name)
+    }
+}
+
+fn digest_sha256(asset: &GithubAsset) -> Option<String> {
+    let hex = asset.digest.as_deref()?.strip_prefix("sha256:")?;
+    (hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then(|| hex.to_ascii_lowercase())
+}
+
+/// The latest Bun for `platform` (Bun publishes only its newest version).
+pub fn bun_release(release: &GithubRelease, platform: Platform) -> Option<Release> {
+    let version = release.tag_name.strip_prefix("bun-v")?.to_owned();
+    let name = match (platform.os, platform.arch) {
+        (Os::Macos, Arch::Aarch64) => "bun-darwin-aarch64.zip",
+        (Os::Macos, Arch::X86_64) => "bun-darwin-x64.zip",
+        (Os::Linux, Arch::Aarch64) => "bun-linux-aarch64.zip",
+        (Os::Linux, Arch::X86_64) => "bun-linux-x64.zip",
+    };
+    let asset = release.asset(name)?;
+    Some(Release {
+        kind: RuntimeKind::Bun,
+        line: major_line(&version),
+        artifacts: vec![Artifact {
+            url: asset.browser_download_url.clone(),
+            sha256: digest_sha256(asset),
+            sha256_url: None,
+            sha256_name: None,
+            format: Format::Zip,
+            layout: Layout::Single {
+                to: "bin/bun".into(),
+            },
+        }],
+        version,
+    })
+}
+
+/// The latest cloudflared for `platform`.
+pub fn cloudflared_release(release: &GithubRelease, platform: Platform) -> Option<Release> {
+    let version = release.tag_name.trim_start_matches('v').to_owned();
+    let (name, format) = match (platform.os, platform.arch) {
+        (Os::Macos, Arch::Aarch64) => ("cloudflared-darwin-arm64.tgz", Format::TarGz),
+        (Os::Macos, Arch::X86_64) => ("cloudflared-darwin-amd64.tgz", Format::TarGz),
+        (Os::Linux, Arch::Aarch64) => ("cloudflared-linux-arm64", Format::Plain),
+        (Os::Linux, Arch::X86_64) => ("cloudflared-linux-amd64", Format::Plain),
+    };
+    let asset = release.asset(name)?;
+    Some(Release {
+        kind: RuntimeKind::Cloudflared,
+        line: major_line(&version),
+        artifacts: vec![Artifact {
+            url: asset.browser_download_url.clone(),
+            sha256: digest_sha256(asset),
+            sha256_url: None,
+            sha256_name: None,
+            format,
+            layout: Layout::Single {
+                to: "bin/cloudflared".into(),
+            },
+        }],
+        version,
+    })
+}
+
+// ---- MariaDB: downloads.mariadb.org -------------------------------------------------
+
+/// MariaDB's release series.
+pub const MARIADB_MAJORS_URL: &str = "https://downloads.mariadb.org/rest-api/mariadb/";
+
+/// The latest release of series `major`, with its files.
+pub fn mariadb_latest_url(major: &str) -> String {
+    format!("https://downloads.mariadb.org/rest-api/mariadb/{major}/latest/")
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct MariadbMajors {
+    #[serde(default)]
+    pub major_releases: Vec<MariadbMajor>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MariadbMajor {
+    pub release_id: String,
+    #[serde(default)]
+    pub release_status: Option<String>,
+    #[serde(default)]
+    pub release_support_type: Option<String>,
+}
+
+/// Stable long-term-support series, newest first (at most four).
+pub fn mariadb_lts_majors(majors: &MariadbMajors) -> Vec<String> {
+    let mut lts: Vec<String> = majors
+        .major_releases
+        .iter()
+        .filter(|m| m.release_status.as_deref() == Some("Stable"))
+        .filter(|m| m.release_support_type.as_deref() == Some("Long Term Support"))
+        .map(|m| m.release_id.clone())
+        .collect();
+    lts.sort_by(|a, b| compare(b, a));
+    lts.truncate(4);
+    lts
+}
+
+/// `/rest-api/mariadb/<major>/latest/`: one release and its files.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct MariadbLatest {
+    #[serde(default)]
+    pub releases: std::collections::BTreeMap<String, MariadbRelease>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MariadbRelease {
+    pub release_id: String,
+    #[serde(default)]
+    pub files: Vec<MariadbFile>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MariadbFile {
+    pub file_name: String,
+    #[serde(default)]
+    pub file_download_url: Option<String>,
+    #[serde(default)]
+    pub checksum: Option<MariadbChecksum>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MariadbChecksum {
+    #[serde(default)]
+    pub sha256sum: Option<String>,
+}
+
+/// The official binary tarball for `platform` (mariadb.org publishes them
+/// for Linux x86-64 only).
+pub fn mariadb_official(
+    latest: &MariadbLatest,
+    major: &str,
+    platform: Platform,
+) -> Option<Release> {
+    if platform.os != Os::Linux || platform.arch != Arch::X86_64 {
+        return None;
+    }
+    let release = latest.releases.values().next()?;
+    let wanted = format!("mariadb-{}-linux-systemd-x86_64.tar.gz", release.release_id);
+    let file = release.files.iter().find(|f| f.file_name == wanted)?;
+    let url = file.file_download_url.clone().unwrap_or_else(|| {
+        format!(
+            "https://archive.mariadb.org/mariadb-{0}/bintar-linux-systemd-x86_64/{wanted}",
+            release.release_id
+        )
+    });
+    Some(Release {
+        kind: RuntimeKind::Mariadb,
+        line: major.to_owned(),
+        version: release.release_id.clone(),
+        artifacts: vec![Artifact {
+            url,
+            sha256: file
+                .checksum
+                .as_ref()
+                .and_then(|c| c.sha256sum.clone())
+                .filter(|h| h.len() == 64),
+            sha256_url: None,
+            sha256_name: None,
+            format: Format::TarGz,
+            layout: Layout::StripTopDir,
+        }],
+    })
+}
+
 /// Pick the hash for `name` out of a sums file (`<hash>  <name>` per line),
 /// or the first hash when `name` is `None`.
 pub fn sha256_from_sums(text: &str, name: Option<&str>) -> Option<String> {
@@ -971,6 +1185,105 @@ mod tests {
             Some('1')
         );
         assert_eq!(sha256_from_sums(sums, Some("c.tar.gz")), None);
+    }
+
+    #[test]
+    fn picks_bun_and_cloudflared_from_github() {
+        let mac = Platform {
+            os: Os::Macos,
+            arch: Arch::Aarch64,
+        };
+        let linux = Platform {
+            os: Os::Linux,
+            arch: Arch::X86_64,
+        };
+        let hash = "ab".repeat(32);
+        let bun: GithubRelease = serde_json::from_value(serde_json::json!({
+            "tag_name": "bun-v1.4.3",
+            "assets": [
+                {"name": "bun-darwin-aarch64.zip", "browser_download_url": "https://x/bun-darwin-aarch64.zip", "digest": format!("sha256:{hash}")},
+                {"name": "bun-linux-x64.zip", "browser_download_url": "https://x/bun-linux-x64.zip"}
+            ]
+        }))
+        .unwrap();
+        let release = bun_release(&bun, mac).unwrap();
+        assert_eq!(
+            (release.line.as_str(), release.version.as_str()),
+            ("1", "1.4.3")
+        );
+        assert_eq!(release.artifacts[0].sha256.as_deref(), Some(hash.as_str()));
+        assert_eq!(release.artifacts[0].format, Format::Zip);
+        assert_eq!(
+            release.artifacts[0].layout,
+            Layout::Single {
+                to: "bin/bun".into()
+            }
+        );
+        assert_eq!(bun_release(&bun, linux).unwrap().artifacts[0].sha256, None);
+
+        let cf: GithubRelease = serde_json::from_value(serde_json::json!({
+            "tag_name": "2026.10.1",
+            "assets": [
+                {"name": "cloudflared-darwin-arm64.tgz", "browser_download_url": "https://x/a.tgz", "digest": format!("sha256:{hash}")},
+                {"name": "cloudflared-linux-amd64", "browser_download_url": "https://x/l", "digest": format!("sha256:{hash}")}
+            ]
+        }))
+        .unwrap();
+        let release = cloudflared_release(&cf, mac).unwrap();
+        assert_eq!(release.version, "2026.10.1");
+        assert_eq!(release.artifacts[0].format, Format::TarGz);
+        assert_eq!(
+            cloudflared_release(&cf, linux).unwrap().artifacts[0].format,
+            Format::Plain
+        );
+        assert!(
+            cloudflared_release(
+                &cf,
+                Platform {
+                    os: Os::Linux,
+                    arch: Arch::Aarch64
+                }
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn picks_mariadb_releases() {
+        let majors: MariadbMajors = serde_json::from_value(serde_json::json!({
+            "major_releases": [
+                {"release_id": "13.0", "release_status": "Stable", "release_support_type": "Rolling"},
+                {"release_id": "12.3", "release_status": "Stable", "release_support_type": "Long Term Support"},
+                {"release_id": "10.11", "release_status": "Stable", "release_support_type": "Long Term Support"},
+                {"release_id": "11.4", "release_status": "Stable", "release_support_type": "Long Term Support"}
+            ]
+        }))
+        .unwrap();
+        assert_eq!(mariadb_lts_majors(&majors), ["12.3", "11.4", "10.11"]);
+        let hash = "cd".repeat(32);
+        let latest: MariadbLatest = serde_json::from_value(serde_json::json!({
+            "releases": {"11.4.13": {"release_id": "11.4.13", "files": [
+                {"file_name": "mariadb-11.4.13.tar.gz"},
+                {"file_name": "mariadb-11.4.13-linux-systemd-x86_64.tar.gz",
+                 "file_download_url": "https://dl/m.tar.gz", "checksum": {"sha256sum": hash}}
+            ]}}
+        }))
+        .unwrap();
+        let linux = Platform {
+            os: Os::Linux,
+            arch: Arch::X86_64,
+        };
+        let release = mariadb_official(&latest, "11.4", linux).unwrap();
+        assert_eq!(release.line, "11.4");
+        assert_eq!(release.version, "11.4.13");
+        assert_eq!(release.artifacts[0].url, "https://dl/m.tar.gz");
+        assert_eq!(release.artifacts[0].sha256.as_deref(), Some(hash.as_str()));
+        assert_eq!(release.artifacts[0].layout, Layout::StripTopDir);
+        let mac = Platform {
+            os: Os::Macos,
+            arch: Arch::Aarch64,
+        };
+        assert!(mariadb_official(&latest, "11.4", mac).is_none());
     }
 
     #[test]

@@ -1,6 +1,6 @@
 name: Runtimes
 
-# Builds RED's own PHP and Valkey runtimes and publishes them, with
+# Builds RED's own PHP, Valkey and MariaDB runtimes and publishes them, with
 # manifest.json, on the rolling `runtimes` release. RED reads
 # https://github.com/<repo>/releases/download/runtimes/manifest.json.
 
@@ -14,6 +14,9 @@ on:
         description: Build the newest Valkey release
         type: boolean
         default: true
+      mariadb_lines:
+        description: MariaDB series to build for macOS and Linux arm64 (space separated, empty for none)
+        default: "11.4 11.8"
   schedule:
     # Mondays: pick up new PHP and Valkey patch releases.
     - cron: "17 3 * * 1"
@@ -32,12 +35,17 @@ jobs:
     outputs:
       php: ${{ steps.plan.outputs.php }}
       valkey: ${{ steps.plan.outputs.valkey }}
+      mariadb: ${{ steps.plan.outputs.mariadb }}
     steps:
+      - uses: actions/checkout@v4
       - id: plan
         env:
           PHP_LINES: ${{ github.event_name == 'schedule' && '8.1 8.2 8.3 8.4 8.5' || inputs.php_lines }}
           BUILD_VALKEY: ${{ github.event_name == 'schedule' || inputs.valkey }}
+          MARIADB_LINES: ${{ github.event_name == 'schedule' && '11.4 11.8' || inputs.mariadb_lines }}
+          MANIFEST_URL: https://github.com/${{ github.repository }}/releases/download/runtimes/manifest.json
         run: |
+          # shellcheck disable=SC2086 # the lists are space separated on purpose
           php=$(printf '%s\n' $PHP_LINES | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')
           echo "php=$php" >> "$GITHUB_OUTPUT"
           if [ "$BUILD_VALKEY" = "true" ]; then
@@ -47,6 +55,11 @@ jobs:
           else
             echo "valkey=" >> "$GITHUB_OUTPUT"
           fi
+          # Newest release per MariaDB series, skipping what is already built.
+          curl -fsSL "$MANIFEST_URL" -o manifest.json || echo '{"runtimes":[]}' > manifest.json
+          # shellcheck disable=SC2086
+          mariadb=$(python3 scripts/runtimes/plan-mariadb.py manifest.json $MARIADB_LINES)
+          echo "mariadb=$mariadb" >> "$GITHUB_OUTPUT"
 
   php:
     name: PHP ${{ matrix.line }} (${{ matrix.platform }})
@@ -115,9 +128,37 @@ jobs:
           name: valkey-${{ matrix.platform }}
           path: out/*
 
+  mariadb:
+    name: MariaDB ${{ matrix.version }} (${{ matrix.platform }})
+    needs: plan
+    if: needs.plan.outputs.mariadb != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJSON(needs.plan.outputs.mariadb) }}
+        # mariadb.org publishes Linux x86-64 binaries itself.
+        platform: [macos-aarch64, macos-x86_64, linux-aarch64]
+        include:
+          - platform: macos-aarch64
+            runner: macos-15
+          - platform: macos-x86_64
+            runner: macos-15-intel
+          - platform: linux-aarch64
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: scripts/runtimes/build-mariadb.sh "${{ matrix.version }}" "${{ matrix.platform }}" out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mariadb-${{ matrix.version }}-${{ matrix.platform }}
+          path: out/*
+
   publish:
     name: Publish
-    needs: [php, valkey]
+    needs: [php, valkey, mariadb]
     # Publish whatever built, even when some builds failed.
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
@@ -134,7 +175,7 @@ jobs:
         run: |
           gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" \
             --title "Runtimes" --prerelease \
-            --notes "PHP and Valkey builds used by RED (\`red php:install\`, \`red runtimes:install valkey\`). Updated by the Runtimes workflow; see manifest.json."
+            --notes "PHP, Valkey and MariaDB builds used by RED (\`red php:install\`, \`red runtimes:install valkey\`, \`red runtimes:install mariadb\`). Updated by the Runtimes workflow; see manifest.json."
       - name: Merge the manifest
         run: |
           shopt -s nullglob

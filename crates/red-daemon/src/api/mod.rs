@@ -16,13 +16,16 @@ use red_core::{Site, SiteKind, sites};
 
 use crate::AppState;
 
+mod databases;
 mod dumps;
 mod logs;
 mod mail;
 mod projects;
+mod queries;
 mod runtimes;
 mod services;
 mod settings;
+mod shares;
 
 pub(crate) type App = State<Arc<AppState>>;
 pub(crate) type ApiResult<T> = Result<Json<T>, ApiResponse>;
@@ -60,6 +63,9 @@ pub fn router(state: Arc<AppState>) -> Router {
         .merge(runtimes::routes())
         .merge(projects::routes())
         .merge(settings::routes())
+        .merge(shares::routes())
+        .merge(queries::routes())
+        .merge(databases::routes())
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
         .with_state(state)

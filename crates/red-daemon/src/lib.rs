@@ -7,6 +7,7 @@
 
 pub mod api;
 pub mod body;
+pub mod databases;
 pub mod dns;
 pub mod doctor;
 pub mod dumps;
@@ -15,8 +16,10 @@ pub mod fpm;
 pub mod mail;
 pub mod projects;
 pub mod proxy;
+pub mod queries;
 pub mod runtimes;
 pub mod services;
+pub mod shares;
 pub mod socket;
 pub mod tls;
 pub mod web;
@@ -89,6 +92,8 @@ pub struct AppState {
     pub services: services::ServiceManager,
     /// Captured `dump()` output.
     pub dumps: Arc<dumps::Dumps>,
+    /// Captured Laravel queries.
+    pub queries: Arc<queries::Queries>,
     /// Caught mail.
     pub mail: Arc<mail::MailStore>,
     /// Port of the mail catcher, once bound.
@@ -102,6 +107,8 @@ pub struct AppState {
     state: RwLock<State>,
     /// New projects being created, and recent ones.
     pub projects: projects::Projects,
+    /// Sites shared through Cloudflare Tunnel.
+    pub shares: shares::Shares,
     /// `php` from projects' `red.toml`, keyed by file, with its mtime.
     project_php: std::sync::Mutex<ProjectPhpCache>,
 }
@@ -254,6 +261,7 @@ pub async fn run(paths: Paths, shutdown: impl Future<Output = ()>) -> Result<(),
         mail: Arc::new(mail::MailStore::open(paths.mail_dir())),
         web_notes: std::sync::Mutex::default(),
         dumps: Arc::new(dumps::Dumps::new(&paths.data_dir, state.capture_dumps)),
+        queries: Arc::new(queries::Queries::new(&paths.data_dir)),
         events,
         tls: authority,
         paths,
@@ -268,6 +276,7 @@ pub async fn run(paths: Paths, shutdown: impl Future<Output = ()>) -> Result<(),
             .unwrap_or_else(red_helper::default_socket),
         state: RwLock::new(state),
         projects: projects::Projects::default(),
+        shares: shares::Shares::default(),
         project_php: std::sync::Mutex::default(),
     });
     renew_certificates(&app);
@@ -321,6 +330,7 @@ pub async fn run(paths: Paths, shutdown: impl Future<Output = ()>) -> Result<(),
             tasks.push(tokio::spawn(dumps::serve(
                 listener,
                 app.dumps.clone(),
+                app.queries.clone(),
                 move || dumps::Renderer {
                     php: renderer_app.php_cli_binaries(),
                     projects: red_core::sites::list(&renderer_app.state_snapshot())
@@ -389,6 +399,7 @@ pub async fn run(paths: Paths, shutdown: impl Future<Output = ()>) -> Result<(),
     for task in tasks {
         let _ = task.await;
     }
+    app.shares.shutdown();
     app.php.shutdown().await;
     app.services.shutdown().await;
     if let Err(err) = std::fs::remove_file(&socket_path)

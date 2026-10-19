@@ -3,7 +3,7 @@
 
 use std::net::ToSocketAddrs;
 
-use red_api::{Check, CheckStatus, DoctorReport};
+use red_api::{Check, CheckStatus, DoctorReport, FixAction};
 
 use crate::AppState;
 
@@ -20,6 +20,26 @@ fn check(
         status,
         detail: detail.into(),
         fix: fix.map(str::to_owned),
+        action: None,
+    }
+}
+
+/// The fix RED can apply itself for a failing check, if any.
+pub fn action_for(check: &Check) -> Option<FixAction> {
+    if check.status == CheckStatus::Ok {
+        return None;
+    }
+    match check.id.as_str() {
+        "php" => Some(FixAction::InstallPhp),
+        // Installed but redd started before it: restarting through the
+        // login agent moves redd onto ports 80 and 443.
+        "helper" if check.detail.starts_with("installed") => Some(FixAction::StartAtLogin),
+        "helper" => Some(FixAction::InstallHelper),
+        "autostart" => Some(FixAction::StartAtLogin),
+        "resolver" => Some(FixAction::InstallDns),
+        "ca" => Some(FixAction::TrustCa),
+        "services" => Some(FixAction::RestartServices),
+        _ => None,
     }
 }
 
@@ -34,6 +54,9 @@ pub async fn run(app: &AppState) -> DoctorReport {
     checks.push(xdebug(app));
     if let Some(services) = services(app) {
         checks.push(services);
+    }
+    for check in &mut checks {
+        check.action = action_for(check);
     }
     DoctorReport { checks }
 }
@@ -606,6 +629,38 @@ fn autostart() -> Check {
             "redd must be started by hand",
             Some("red service:install"),
         )
+    }
+}
+
+#[cfg(test)]
+mod action_tests {
+    use super::*;
+
+    #[test]
+    fn picks_fixes() {
+        let make = |id: &str, status, detail: &str| check(id, id, status, detail, None);
+        assert_eq!(action_for(&make("php", CheckStatus::Ok, "8.4")), None);
+        assert_eq!(
+            action_for(&make("php", CheckStatus::Fail, "no php-fpm found")),
+            Some(FixAction::InstallPhp)
+        );
+        assert_eq!(
+            action_for(&make("helper", CheckStatus::Warn, "not installed")),
+            Some(FixAction::InstallHelper)
+        );
+        assert_eq!(
+            action_for(&make(
+                "helper",
+                CheckStatus::Warn,
+                "installed, but redd started before it"
+            )),
+            Some(FixAction::StartAtLogin)
+        );
+        assert_eq!(
+            action_for(&make("ca", CheckStatus::Fail, "x")),
+            Some(FixAction::TrustCa)
+        );
+        assert_eq!(action_for(&make("dns", CheckStatus::Fail, "x")), None);
     }
 }
 

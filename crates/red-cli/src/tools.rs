@@ -237,6 +237,34 @@ pub(crate) async fn resolve_node(ctx: &Ctx<'_>) -> anyhow::Result<PathBuf> {
     }
 }
 
+/// `red bun` / `red bunx`: RED's Bun, else one on `PATH`, else RED
+/// downloads it.
+pub(crate) async fn bun(ctx: &Ctx<'_>, x: bool, args: &[OsString]) -> anyhow::Result<()> {
+    let data = red_platform::Paths::discover()?.data_dir;
+    let find = || {
+        red_platform::binaries::red_runtime(&data, "bun", "bin/bun")
+            .or_else(|| red_platform::binaries::in_path("bun").into_iter().next())
+    };
+    let bun = match find() {
+        Some(bun) => bun,
+        None => {
+            ctx.client
+                .status()
+                .await
+                .context("Bun is not installed; start redd so RED can install it")?;
+            eprintln!("Bun is not installed; installing it with RED.");
+            crate::runtimes::install_quietly(ctx, red_api::RuntimeKind::Bun, "").await?;
+            find().context("Bun did not install")?
+        }
+    };
+    let mut full: Vec<OsString> = Vec::new();
+    if x {
+        full.push("x".into());
+    }
+    full.extend_from_slice(args);
+    exec(&bun, &full, &[parent(&bun)])
+}
+
 /// Composer: RED's own copy, else one on `PATH`, else RED downloads it.
 async fn resolve_composer(ctx: &Ctx<'_>) -> anyhow::Result<PathBuf> {
     let data = red_platform::Paths::discover()?.data_dir;

@@ -169,6 +169,7 @@ pub struct Renderer {
 pub async fn serve(
     listener: TcpListener,
     dumps: std::sync::Arc<Dumps>,
+    queries: std::sync::Arc<crate::queries::Queries>,
     renderer: impl Fn() -> Renderer + Send + Sync + Clone + 'static,
     events: tokio::sync::broadcast::Sender<Event>,
     cancel: CancellationToken,
@@ -186,13 +187,14 @@ pub async fn serve(
             },
         };
         let dumps = dumps.clone();
+        let queries = queries.clone();
         let renderer = renderer.clone();
         let events = events.clone();
         let cancel = cancel.clone();
         tokio::spawn(async move {
             tokio::select! {
                 () = cancel.cancelled() => {}
-                () = connection(stream, &dumps, &renderer, &events) => {}
+                () = connection(stream, &dumps, &queries, &renderer, &events) => {}
             }
         });
     }
@@ -201,10 +203,22 @@ pub async fn serve(
 async fn connection(
     stream: TcpStream,
     dumps: &Dumps,
+    queries: &crate::queries::Queries,
     renderer: &(impl Fn() -> Renderer + Send + Sync),
     events: &tokio::sync::broadcast::Sender<Event>,
 ) {
     let mut reader = BufReader::new(stream);
+    // Queries come in bursts; tell subscribers a few times a second at most,
+    // and once more when the request is done.
+    let mut unannounced = false;
+    let mut announced = std::time::Instant::now() - Duration::from_secs(1);
+    let mut announce = |force: bool, unannounced: &mut bool| {
+        if *unannounced && (force || announced.elapsed() >= Duration::from_millis(300)) {
+            let _ = events.send(Event::QueryReceived);
+            announced = std::time::Instant::now();
+            *unannounced = false;
+        }
+    };
     loop {
         let mut line = Vec::new();
         let read = {
@@ -212,11 +226,22 @@ async fn connection(
             limited.read_until(b'\n', &mut line).await
         };
         match read {
-            Ok(0) | Err(_) => return,
+            Ok(0) | Err(_) => {
+                announce(true, &mut unannounced);
+                return;
+            }
             Ok(_) => {}
         }
         let payload = trim_line(&line);
         if payload.is_empty() {
+            continue;
+        }
+        // RED's query inspector sends JSON; VarDumper sends base64.
+        if payload.first() == Some(&b'{') {
+            if queries.receive(payload) {
+                unannounced = true;
+                announce(false, &mut unannounced);
+            }
             continue;
         }
         match render(dumps, &renderer(), payload).await {

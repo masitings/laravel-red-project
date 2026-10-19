@@ -1,21 +1,64 @@
+import {
+  MoreHorizontalIcon,
+  PencilIcon,
+  PlayIcon,
+  RotateCwIcon,
+  ScrollTextIcon,
+  ServerIcon,
+  SquareIcon,
+  Trash2Icon,
+} from "lucide-react";
 import { type FormEvent, useState } from "react";
-import type { ServiceInfo } from "../api/gen/ServiceInfo";
-import type { ServiceStatus } from "../api/gen/ServiceStatus";
-import { useServiceActions, useServices } from "../api/queries";
-import { RuntimeInstaller } from "../components/RuntimeInstaller";
-import { Badge, Button, Card, ErrorNote } from "../components/ui";
+import { toast } from "sonner";
+import type { ServiceInfo } from "@/api/gen/ServiceInfo";
+import type { ServiceStatus } from "@/api/gen/ServiceStatus";
+import { useServiceActions, useServices } from "@/api/queries";
+import { CodeBlock, Empty, ErrorNote, PageHeader } from "@/components/common";
+import { RuntimeInstaller } from "@/components/RuntimeInstaller";
+import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
+import { LogEntries } from "@/views/LogsView";
 
-const statusTone: Record<ServiceStatus, "good" | "warn" | "bad" | "neutral"> = {
-  running: "good",
-  starting: "warn",
-  failed: "bad",
-  stopped: "neutral",
-};
-
-const installHint: Record<string, string> = {
-  mysql: "brew install mysql (or mariadb)",
-  postgres: "brew install postgresql@17",
-  redis: "brew install valkey (or redis)",
+const statusVariant: Record<ServiceStatus, "success" | "warning" | "destructive" | "secondary"> = {
+  running: "success",
+  starting: "warning",
+  failed: "destructive",
+  stopped: "secondary",
 };
 
 export function ServicesView() {
@@ -26,113 +69,242 @@ export function ServicesView() {
 
   return (
     <div className="space-y-6">
-      <Card title="Services">
-        <ErrorNote error={failed?.error ?? services.error} />
-        {services.data && list.length === 0 && (
-          <p className="text-sm text-stone-500">
-            No services yet. Add MySQL, PostgreSQL or Redis below; RED runs them on 127.0.0.1 and
-            starts them with redd.
-          </p>
-        )}
-        <ul className="divide-y divide-stone-100 dark:divide-stone-800">
-          {list.map((service) => (
-            <ServiceRow key={service.name} service={service} />
-          ))}
-        </ul>
-      </Card>
+      <PageHeader
+        title="Services"
+        description="Databases and caches RED runs on 127.0.0.1 and starts with redd."
+      />
+      <ErrorNote error={failed?.error ?? services.error} />
+      {services.data && list.length === 0 && (
+        <Empty icon={<ServerIcon />}>
+          <p>No services yet. Add MySQL, MariaDB, PostgreSQL or Valkey below.</p>
+        </Empty>
+      )}
+      <div className="space-y-3">
+        {list.map((service) => (
+          <ServiceCard key={service.name} service={service} />
+        ))}
+      </div>
       <AddService />
-      <Card title="Download a database server">
-        <p className="mb-3 text-sm text-stone-500">
-          RED downloads MySQL, PostgreSQL and Valkey (a Redis-compatible cache) itself; they then
-          appear under "Add a service".
-        </p>
-        <RuntimeInstaller kinds={["mysql", "postgres", "valkey"]} />
+      <Card>
+        <CardHeader>
+          <CardTitle>Download a server</CardTitle>
+          <CardDescription>
+            RED downloads MySQL, MariaDB, PostgreSQL and Valkey (a Redis-compatible cache) itself;
+            they then appear under &ldquo;Add a service&rdquo;.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <RuntimeInstaller kinds={["mysql", "mariadb", "postgres", "valkey"]} />
+        </CardContent>
       </Card>
     </div>
   );
 }
 
-function ServiceRow({ service }: { service: ServiceInfo }) {
+function ServiceCard({ service }: { service: ServiceInfo }) {
   const actions = useServiceActions();
-  const [confirmRemove, setConfirmRemove] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [showLog, setShowLog] = useState(false);
   const running = service.status === "running" || service.status === "starting";
   const server = [service.flavor ?? service.kind, service.version].filter(Boolean).join(" ");
+  const act = (action: "start" | "stop" | "restart") =>
+    actions.action.mutate({ name: service.name, action });
 
   return (
-    <li className="py-3 text-sm">
-      <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2 font-medium">
-            {service.name}
-            <Badge tone={statusTone[service.status]}>{service.status}</Badge>
+    <Card className="gap-4 py-4">
+      <CardContent className="space-y-3 px-4">
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 font-medium">
+              {service.name}
+              <Badge variant={statusVariant[service.status]}>{service.status}</Badge>
+            </div>
+            <div className="text-xs text-muted-foreground">
+              {server} · 127.0.0.1:{service.port}
+              {service.autostart && " · starts with redd"}
+            </div>
           </div>
-          <div className="text-xs text-stone-500">
-            {server} · 127.0.0.1:{service.port}
+          <div className="flex shrink-0 items-center gap-1.5">
+            <Button size="sm" variant="outline" onClick={() => act(running ? "stop" : "start")}>
+              {running ? <SquareIcon /> : <PlayIcon />}
+              {running ? "Stop" : "Start"}
+            </Button>
+            {running && (
+              <Button size="sm" variant="ghost" onClick={() => act("restart")}>
+                <RotateCwIcon /> Restart
+              </Button>
+            )}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${service.name}`}>
+                  <MoreHorizontalIcon />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-48">
+                <DropdownMenuItem onSelect={() => setEditing(true)}>
+                  <PencilIcon /> Edit…
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => setShowLog((v) => !v)}>
+                  <ScrollTextIcon /> {showLog ? "Hide log" : "Show log"}
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem variant="destructive" onSelect={() => setRemoving(true)}>
+                  <Trash2Icon /> Remove…
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <label className="flex items-center gap-1 text-xs text-stone-500">
-            <input
-              type="checkbox"
-              checked={service.autostart}
-              aria-label={`Start ${service.name} with redd`}
-              onChange={(e) =>
-                actions.autostart.mutate({ name: service.name, on: e.target.checked })
-              }
-            />
-            autostart
-          </label>
-          <Button
-            onClick={() =>
-              actions.action.mutate({ name: service.name, action: running ? "stop" : "start" })
-            }
-          >
-            {running ? "Stop" : "Start"}
-          </Button>
-          {running && (
+        {service.status === "failed" && service.error && (
+          <ErrorNote error={new Error(`${service.error} (log: ${service.log_file})`)} />
+        )}
+        <details>
+          <summary className="cursor-pointer text-xs text-muted-foreground">.env settings</summary>
+          <CodeBlock className="mt-2">
+            {service.env.map((v) => `${v.name}=${v.value}`).join("\n")}
+          </CodeBlock>
+        </details>
+        {showLog && (
+          <div className="rounded-md border p-3">
+            <LogEntries id={`service:${service.name}`} />
+          </div>
+        )}
+      </CardContent>
+      <EditService service={service} open={editing} onOpenChange={setEditing} />
+      <AlertDialog open={removing} onOpenChange={setRemoving}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove {service.name}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              RED stops the server and forgets the service. Keep its data to add it back later, or
+              delete it for good.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
             <Button
-              variant="ghost"
-              onClick={() => actions.action.mutate({ name: service.name, action: "restart" })}
+              variant="outline"
+              onClick={() => actions.remove.mutate({ name: service.name, deleteData: false })}
             >
-              Restart
+              Remove, keep data
             </Button>
-          )}
-          {confirmRemove ? (
-            <>
-              <Button
-                variant="ghost"
-                onClick={() => actions.remove.mutate({ name: service.name, deleteData: false })}
-              >
-                Remove, keep data
-              </Button>
-              <Button
-                variant="ghost"
-                className="text-red-700 dark:text-red-400"
-                onClick={() => actions.remove.mutate({ name: service.name, deleteData: true })}
-              >
-                Remove and delete data
-              </Button>
-            </>
-          ) : (
-            <Button variant="ghost" onClick={() => setConfirmRemove(true)}>
-              Remove
+            <Button
+              variant="destructive"
+              onClick={() => actions.remove.mutate({ name: service.name, deleteData: true })}
+            >
+              Remove and delete data
             </Button>
-          )}
-        </div>
-      </div>
-      {service.status === "failed" && service.error && (
-        <pre className="mt-2 overflow-x-auto whitespace-pre-wrap rounded bg-red-50 p-2 text-xs text-red-800 dark:bg-red-950 dark:text-red-300">
-          {service.error}
-          {"\n"}Log: {service.log_file}
-        </pre>
-      )}
-      <details className="mt-2">
-        <summary className="cursor-pointer text-xs text-stone-500">.env settings</summary>
-        <pre className="mt-1 select-all rounded bg-stone-100 p-2 text-xs dark:bg-stone-800">
-          {service.env.map((v) => `${v.name}=${v.value}`).join("\n")}
-        </pre>
-      </details>
-    </li>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </Card>
+  );
+}
+
+function EditService({
+  service,
+  open,
+  onOpenChange,
+}: {
+  service: ServiceInfo;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const services = useServices();
+  const actions = useServiceActions();
+  const [port, setPort] = useState(String(service.port));
+  const [version, setVersion] = useState("");
+  const [autostart, setAutostart] = useState(service.autostart);
+  // Data only moves between versions of the same server (Redis and Valkey
+  // share a format).
+  const versions = (services.data?.available ?? []).filter(
+    (i) =>
+      i.kind === service.kind &&
+      (service.kind === "redis" || i.flavor === service.flavor) &&
+      i.binary !== service.binary,
+  );
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    actions.update.mutate(
+      {
+        name: service.name,
+        port: Number(port) !== service.port ? Number(port) : undefined,
+        version: version || undefined,
+        autostart: autostart !== service.autostart ? autostart : undefined,
+      },
+      {
+        onSuccess: () => {
+          toast.success(`${service.name} updated`);
+          onOpenChange(false);
+        },
+      },
+    );
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <form onSubmit={submit} className="space-y-5">
+          <DialogHeader>
+            <DialogTitle>Edit {service.name}</DialogTitle>
+            <DialogDescription>
+              Changes restart the service. Update the port in your projects&apos; .env afterwards.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label htmlFor={`port-${service.name}`}>Port</Label>
+            <Input
+              id={`port-${service.name}`}
+              inputMode="numeric"
+              value={port}
+              onChange={(e) => setPort(e.target.value.replace(/\D/g, ""))}
+              required
+            />
+          </div>
+          <div className="space-y-2">
+            <Label>Server version</Label>
+            <Select value={version} onValueChange={setVersion} disabled={versions.length === 0}>
+              <SelectTrigger className="w-full" aria-label="Server version">
+                <SelectValue
+                  placeholder={`${service.flavor ?? service.kind} ${service.version ?? ""} (current)`}
+                />
+              </SelectTrigger>
+              <SelectContent>
+                {versions.map((i) => (
+                  <SelectItem key={i.binary} value={i.full_version}>
+                    {i.flavor} {i.full_version}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              {versions.length === 0
+                ? "No other version of this server is installed."
+                : "Only newer versions of the same server; PostgreSQL stays on its major version."}
+            </p>
+          </div>
+          <div className="flex items-center gap-3">
+            <Switch
+              id={`autostart-${service.name}`}
+              checked={autostart}
+              onCheckedChange={setAutostart}
+            />
+            <Label htmlFor={`autostart-${service.name}`}>Start with redd</Label>
+          </div>
+          <ErrorNote error={actions.update.error} />
+          <DialogFooter>
+            <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={actions.update.isPending}>
+              Save
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -153,53 +325,54 @@ function AddService() {
         version: install.full_version,
         port: port ? Number(port) : undefined,
       },
-      { onSuccess: () => setPort("") },
+      {
+        onSuccess: () => {
+          setPort("");
+          toast.success(`Added ${install.flavor} ${install.full_version}`);
+        },
+      },
     );
   };
 
-  const kinds = ["mysql", "postgres", "redis"] as const;
-  const missing = kinds.filter((k) => !available.some((i) => i.kind === k));
-
   return (
-    <Card title="Add a service">
-      {services.data && available.length === 0 ? (
-        <p className="text-sm text-stone-500">
-          No database servers found yet. Download one below, or install one with Homebrew.
-        </p>
-      ) : (
-        <form onSubmit={submit} className="flex flex-wrap items-center gap-2">
-          <select
-            aria-label="Server"
-            className="rounded border border-stone-300 bg-transparent px-2 py-1 text-sm dark:border-stone-700"
-            value={choice}
-            onChange={(e) => setChoice(e.target.value)}
-            required
-          >
-            <option value="">Choose a server…</option>
-            {available.map((install, index) => (
-              <option key={install.binary} value={index}>
-                {install.flavor} {install.full_version}
-              </option>
-            ))}
-          </select>
-          <input
-            aria-label="Port"
-            placeholder="port (default)"
-            inputMode="numeric"
-            className="w-32 rounded border border-stone-300 bg-transparent px-2 py-1 text-sm dark:border-stone-700"
-            value={port}
-            onChange={(e) => setPort(e.target.value.replace(/\D/g, ""))}
-          />
-          <Button type="submit" variant="primary" disabled={actions.add.isPending}>
-            Add service
-          </Button>
-        </form>
-      )}
-      {missing.length > 0 && available.length > 0 && (
-        <p className="mt-3 text-xs text-stone-500">
-          Not installed: {missing.map((k) => `${k} (${installHint[k]})`).join(", ")}
-        </p>
-      )}
+    <Card>
+      <CardHeader>
+        <CardTitle>Add a service</CardTitle>
+        <CardDescription>Pick a server RED found or downloaded.</CardDescription>
+      </CardHeader>
+      <CardContent>
+        {services.data && available.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No database servers found yet. Download one below, or install one with Homebrew.
+          </p>
+        ) : (
+          <form onSubmit={submit} className="flex flex-wrap items-center gap-2">
+            <Select value={choice} onValueChange={setChoice}>
+              <SelectTrigger className="w-64" aria-label="Server">
+                <SelectValue placeholder="Choose a server…" />
+              </SelectTrigger>
+              <SelectContent>
+                {available.map((install, index) => (
+                  <SelectItem key={install.binary} value={String(index)}>
+                    {install.flavor} {install.full_version}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Input
+              aria-label="Port"
+              placeholder="port (default)"
+              inputMode="numeric"
+              className="w-36"
+              value={port}
+              onChange={(e) => setPort(e.target.value.replace(/\D/g, ""))}
+            />
+            <Button type="submit" disabled={actions.add.isPending || choice === ""}>
+              Add service
+            </Button>
+          </form>
+        )}
+      </CardContent>
     </Card>
   );
 }

@@ -1,12 +1,17 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
+import { CheckIcon } from "lucide-react";
 import { type ReactNode, useState } from "react";
+import { ErrorNote } from "@/components/common";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { cn } from "@/lib/utils";
 import { api, RedApiError } from "../api/client";
 import type { Check } from "../api/gen/Check";
 import type { StatusResponse } from "../api/gen/StatusResponse";
 import { keys, useDoctor } from "../api/queries";
 import { RuntimeInstaller } from "../components/RuntimeInstaller";
-import { Badge, Button, ErrorNote } from "../components/ui";
 
 const DONE_KEY = "red.setup.done";
 
@@ -118,7 +123,7 @@ export function SetupView({ status, onClose }: { status: StatusResponse; onClose
       busy: system.isPending,
       error: shown(system.error),
       action: (
-        <Button variant="primary" onClick={() => system.mutate()} disabled={system.isPending}>
+        <Button onClick={() => system.mutate()} disabled={system.isPending}>
           {system.isPending ? "Waiting for password…" : "Install helper"}
         </Button>
       ),
@@ -131,7 +136,6 @@ export function SetupView({ status, onClose }: { status: StatusResponse; onClose
       error: shown(autostart.error),
       action: (
         <Button
-          variant="primary"
           onClick={() => autostart.mutate()}
           disabled={autostart.isPending || !helperInstalled}
         >
@@ -145,7 +149,7 @@ export function SetupView({ status, onClose }: { status: StatusResponse; onClose
         find("php")?.status === "ok" ? find("php")?.detail : "RED's own PHP build, with Xdebug.",
       done: ok("php"),
       action: (
-        <Button variant="primary" onClick={() => setShowPhp((v) => !v)}>
+        <Button onClick={() => setShowPhp((v) => !v)}>
           {showPhp ? "Hide versions" : "Choose a version"}
         </Button>
       ),
@@ -158,11 +162,7 @@ export function SetupView({ status, onClose }: { status: StatusResponse; onClose
       busy: dns.isPending,
       error: dns.error,
       action: (
-        <Button
-          variant="primary"
-          onClick={() => dns.mutate()}
-          disabled={dns.isPending || !ok("helper")}
-        >
+        <Button onClick={() => dns.mutate()} disabled={dns.isPending || !ok("helper")}>
           Set up DNS
         </Button>
       ),
@@ -176,7 +176,7 @@ export function SetupView({ status, onClose }: { status: StatusResponse; onClose
       busy: trust.isPending,
       error: shown(trust.error),
       action: (
-        <Button variant="primary" onClick={() => trust.mutate()} disabled={trust.isPending}>
+        <Button onClick={() => trust.mutate()} disabled={trust.isPending}>
           Trust certificates
         </Button>
       ),
@@ -190,11 +190,7 @@ export function SetupView({ status, onClose }: { status: StatusResponse; onClose
       busy: installCli.isPending,
       error: installCli.error,
       action: cli.data?.bundled ? (
-        <Button
-          variant="primary"
-          onClick={() => installCli.mutate()}
-          disabled={installCli.isPending}
-        >
+        <Button onClick={() => installCli.mutate()} disabled={installCli.isPending}>
           Install command
         </Button>
       ) : null,
@@ -210,7 +206,7 @@ export function SetupView({ status, onClose }: { status: StatusResponse; onClose
     <div className="mx-auto max-w-2xl space-y-6">
       <header className="space-y-1">
         <h1 className="text-xl font-semibold">Set up RED</h1>
-        <p className="text-sm text-stone-600 dark:text-stone-400">
+        <p className="text-sm text-muted-foreground">
           A few one-time steps so sites work at https://name.{status.tld}. {done} of {steps.length}{" "}
           done.
         </p>
@@ -225,8 +221,12 @@ export function SetupView({ status, onClose }: { status: StatusResponse; onClose
         <Button variant="ghost" onClick={() => doctor.refetch()} disabled={doctor.isFetching}>
           Check again
         </Button>
-        {done < steps.length && <Button onClick={finish}>Skip for now</Button>}
-        <Button variant="primary" onClick={finish} disabled={done < steps.length}>
+        {done < steps.length && (
+          <Button variant="outline" onClick={finish}>
+            Skip for now
+          </Button>
+        )}
+        <Button onClick={finish} disabled={done < steps.length}>
           Done
         </Button>
       </div>
@@ -255,31 +255,31 @@ function Step({
   extra,
 }: StepProps & { number: number }) {
   return (
-    <li
-      aria-label={title}
-      className="rounded-xl border border-stone-200 bg-white p-4 dark:border-stone-800 dark:bg-stone-900"
-    >
-      <div className="flex items-start gap-3">
-        <span
-          aria-hidden
-          className={`grid size-6 shrink-0 place-items-center rounded-full text-xs font-semibold ${
-            done
-              ? "bg-emerald-600 text-white"
-              : "bg-stone-200 text-stone-700 dark:bg-stone-800 dark:text-stone-300"
-          }`}
-        >
-          {done ? "✓" : number}
-        </span>
-        <div className="min-w-0 flex-1 space-y-1">
-          <h2 className="font-medium">{title}</h2>
-          {text && <p className="text-sm text-stone-600 dark:text-stone-400">{text}</p>}
-          <ErrorNote error={error} />
-        </div>
-        <div className="shrink-0" aria-busy={busy || undefined}>
-          {done ? <Badge tone="good">Done</Badge> : action}
-        </div>
-      </div>
-      {extra && <div className="mt-3 pl-9">{extra}</div>}
+    <li aria-label={title}>
+      <Card className="gap-0 py-4">
+        <CardContent className="px-4">
+          <div className="flex items-start gap-3">
+            <span
+              aria-hidden
+              className={cn(
+                "grid size-6 shrink-0 place-items-center rounded-full text-xs font-semibold",
+                done ? "bg-success text-white" : "bg-muted text-muted-foreground",
+              )}
+            >
+              {done ? <CheckIcon className="size-3.5" /> : number}
+            </span>
+            <div className="min-w-0 flex-1 space-y-1">
+              <h2 className="font-medium">{title}</h2>
+              {text && <p className="text-sm text-muted-foreground">{text}</p>}
+              <ErrorNote error={error} />
+            </div>
+            <div className="shrink-0" aria-busy={busy || undefined}>
+              {done ? <Badge variant="success">Done</Badge> : action}
+            </div>
+          </div>
+          {extra && <div className="mt-3 pl-9">{extra}</div>}
+        </CardContent>
+      </Card>
     </li>
   );
 }

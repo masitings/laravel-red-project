@@ -4,4 +4,4 @@
  * Something changed in the daemon. Sent on `GET /v1/events` as
  * Server-Sent Events; clients refetch what the event names.
  */
-export type Event = { "type": "connected" } | { "type": "sites_changed" } | { "type": "proxies_changed" } | { "type": "php_changed" } | { "type": "services_changed" } | { "type": "mail_received", id: string, } | { "type": "mail_changed" } | { "type": "dump_received" } | { "type": "dumps_changed" } | { "type": "runtimes_changed" } | { "type": "projects_changed" };
+export type Event = { "type": "connected" } | { "type": "sites_changed" } | { "type": "proxies_changed" } | { "type": "php_changed" } | { "type": "services_changed" } | { "type": "mail_received", id: string, } | { "type": "mail_changed" } | { "type": "dump_received" } | { "type": "dumps_changed" } | { "type": "runtimes_changed" } | { "type": "projects_changed" } | { "type": "shares_changed" } | { "type": "query_received" } | { "type": "queries_changed" };

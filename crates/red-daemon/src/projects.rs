@@ -536,7 +536,7 @@ async fn run(r: &Reporter, mut command: tokio::process::Command) -> Result<(), S
     }
 }
 
-async fn ensure_running(app: &AppState, service: &str) -> Result<(), String> {
+pub(crate) async fn ensure_running(app: &AppState, service: &str) -> Result<(), String> {
     let config = app
         .state_snapshot()
         .services

@@ -3,4 +3,4 @@
 /**
  * Something RED can download and manage itself.
  */
-export type RuntimeKind = "php" | "mysql" | "postgres" | "valkey" | "node" | "composer";
+export type RuntimeKind = "php" | "mysql" | "postgres" | "valkey" | "node" | "composer" | "mariadb" | "bun" | "cloudflared";

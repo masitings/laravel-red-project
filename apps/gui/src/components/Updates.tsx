@@ -3,24 +3,20 @@ import { getVersion } from "@tauri-apps/api/app";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check } from "@tauri-apps/plugin-updater";
+import { RefreshCwIcon } from "lucide-react";
 import { useState } from "react";
-import { api } from "../api/client";
-import type { RuntimeInfo } from "../api/gen/RuntimeInfo";
-import type { RuntimeKind } from "../api/gen/RuntimeKind";
-import type { StatusResponse } from "../api/gen/StatusResponse";
-import { keys, useRuntimes } from "../api/queries";
-import { Badge, Button, Card, ErrorNote } from "./ui";
+import { api } from "@/api/client";
+import type { RuntimeInfo } from "@/api/gen/RuntimeInfo";
+import type { StatusResponse } from "@/api/gen/StatusResponse";
+import { keys, useRuntimes } from "@/api/queries";
+import { ErrorNote } from "@/components/common";
+import { runtimeLabel as label } from "@/components/runtime-labels";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 const SIX_HOURS = 6 * 60 * 60 * 1000;
-
-const label: Record<RuntimeKind, string> = {
-  php: "PHP",
-  mysql: "MySQL",
-  postgres: "PostgreSQL",
-  valkey: "Valkey",
-  node: "Node.js",
-  composer: "Composer",
-};
 
 /** Version of the desktop app, or `undefined` outside Tauri. */
 export function useAppVersion() {
@@ -71,11 +67,14 @@ export function useUpdateCount(): number {
 
 export function UpdatesCard({ status }: { status: StatusResponse }) {
   return (
-    <Card title="Updates">
-      <div className="space-y-4 text-sm">
+    <Card>
+      <CardHeader>
+        <CardTitle>Updates</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4 text-sm">
         {isTauri() && <AppUpdate status={status} />}
         <RuntimeUpdates />
-      </div>
+      </CardContent>
     </Card>
   );
 }
@@ -124,43 +123,52 @@ function AppUpdate({ status }: { status: StatusResponse }) {
         <div className="flex items-center gap-2">
           <span className="font-medium">RED {app}</span>
           {enabled.data === false && (
-            <span className="text-stone-500">
+            <span className="text-muted-foreground">
               This build does not update itself; download new releases from GitHub.
             </span>
           )}
-          {enabled.data && update.isFetching && <span className="text-stone-500">Checking…</span>}
-          {enabled.data && !update.isFetching && update.data === null && (
-            <Badge tone="good">up to date</Badge>
+          {enabled.data && update.isFetching && (
+            <span className="text-muted-foreground">Checking…</span>
           )}
-          {update.data && <Badge tone="warn">{update.data.version} available</Badge>}
+          {enabled.data && !update.isFetching && update.data === null && (
+            <Badge variant="success">up to date</Badge>
+          )}
+          {update.data && <Badge variant="warning">{update.data.version} available</Badge>}
         </div>
         <div className="flex items-center gap-2">
           {enabled.data && !update.data && (
-            <Button variant="ghost" onClick={() => update.refetch()} disabled={update.isFetching}>
-              Check now
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => update.refetch()}
+              disabled={update.isFetching}
+            >
+              <RefreshCwIcon /> Check now
             </Button>
           )}
           {update.data && (
-            <Button variant="primary" onClick={() => install.mutate()} disabled={install.isPending}>
+            <Button size="sm" onClick={() => install.mutate()} disabled={install.isPending}>
               {install.isPending ? (progress ?? "Downloading…") : "Install and restart"}
             </Button>
           )}
         </div>
       </div>
       {update.data?.body && (
-        <p className="whitespace-pre-line text-xs text-stone-500">{update.data.body}</p>
+        <p className="text-xs whitespace-pre-line text-muted-foreground">{update.data.body}</p>
       )}
       <ErrorNote error={update.error ?? install.error} />
       {mismatch && (
-        <div className="flex items-center justify-between gap-3 rounded-md bg-amber-50 p-2 dark:bg-amber-950">
-          <span>
-            redd {status.version} is running, but this app is {app}. Restart it to use the new
-            version.
-          </span>
-          <Button onClick={() => restart.mutate()} disabled={restart.isPending}>
-            {restart.isPending ? "Restarting…" : "Restart redd"}
-          </Button>
-        </div>
+        <Alert className="border-warning/40">
+          <AlertDescription className="flex items-center justify-between gap-3">
+            <span>
+              redd {status.version} is running, but this app is {app}. Restart it to use the new
+              version.
+            </span>
+            <Button size="sm" onClick={() => restart.mutate()} disabled={restart.isPending}>
+              {restart.isPending ? "Restarting…" : "Restart redd"}
+            </Button>
+          </AlertDescription>
+        </Alert>
       )}
       <ErrorNote error={restart.error} />
     </div>
@@ -179,13 +187,13 @@ function RuntimeUpdates() {
     onSettled: () => client.invalidateQueries({ queryKey: keys.runtimes }),
   });
   if (updates.length === 0) {
-    return <p className="text-stone-500">Runtimes installed by RED are up to date.</p>;
+    return <p className="text-muted-foreground">Runtimes installed by RED are up to date.</p>;
   }
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-3">
         <span className="font-medium">Runtime updates</span>
-        <Button variant="primary" onClick={() => updateAll.mutate()} disabled={updateAll.isPending}>
+        <Button size="sm" onClick={() => updateAll.mutate()} disabled={updateAll.isPending}>
           {updateAll.isPending ? "Starting…" : "Update all"}
         </Button>
       </div>
@@ -195,7 +203,7 @@ function RuntimeUpdates() {
             <span className="w-28">
               {label[runtime.kind]} {runtime.line}
             </span>
-            <span className="font-mono text-xs leading-5 text-stone-600 dark:text-stone-400">
+            <span className="font-mono text-xs leading-5 text-muted-foreground">
               {runtime.version} → {runtime.update}
               {runtime.update === runtime.version && " (new build)"}
             </span>

@@ -104,6 +104,14 @@ const doctor: DoctorReport = {
       detail: "serving on 80 and 8443",
       fix: "red helper:install",
     },
+    {
+      id: "resolver",
+      label: "Resolver",
+      status: "fail",
+      detail: "missing",
+      fix: "red dns:install",
+      action: "install_dns",
+    },
   ],
 };
 
@@ -214,6 +222,22 @@ const runtimes: RuntimesResponse = {
   catalog_errors: [],
 };
 
+function query(id: number, sql: string, bound: string) {
+  return {
+    id,
+    received: 1_792_000_000_000 + id,
+    sql,
+    bindings: [],
+    bound,
+    time_ms: id === 3 ? 150 : 1.5,
+    connection: "mysql",
+    request: "GET /users",
+    request_id: "r1",
+    file: "/Users/me/Sites/blog/app/Http/Controllers/UserController.php",
+    line: 10 + id,
+  };
+}
+
 let settings = {
   tld: "test",
   http_port: 80,
@@ -246,6 +270,31 @@ function mockDaemon() {
         return doctor;
       case "/v1/paths":
         return ["/Users/me/Sites"];
+      case "/v1/queries":
+        return {
+          enabled: true,
+          queries: [
+            query(1, "select * from users where id = ?", "select * from users where id = 1"),
+            query(
+              2,
+              "select * from posts where user_id = ?",
+              "select * from posts where user_id = 1",
+            ),
+            query(
+              3,
+              "select * from posts where user_id = ?",
+              "select * from posts where user_id = 2",
+            ),
+          ],
+        };
+      case "/v1/shares":
+        return { shares: [], logged_in: false, cloudflared: null };
+      case "/v1/services/mysql/databases":
+        return {
+          service: "mysql",
+          databases: [{ name: "shop", size: 2048 }],
+          backups: [],
+        };
       case "/v1/settings":
         return settings;
       case "/v1/php/8.4/info":
@@ -275,6 +324,13 @@ function mockDaemon() {
   });
 }
 
+/** Choose `name` in a Radix Select (or open a menu and pick an item). */
+async function pick(trigger: HTMLElement, name: string | RegExp) {
+  fireEvent.keyDown(trigger, { key: "Enter" });
+  const option = await screen.findByRole("option", { name });
+  fireEvent.keyDown(option, { key: "Enter" });
+}
+
 function renderApp() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -295,18 +351,19 @@ describe("App", () => {
     renderApp();
     expect(await screen.findByText("blog.test")).toBeInTheDocument();
     expect(screen.getByText("laravel")).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByLabelText("PHP version for shop")).toHaveValue("8.2"));
-    expect(screen.getByText("Unlink")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByLabelText("PHP version for shop")).toHaveTextContent("PHP 8.2"),
+    );
+    fireEvent.keyDown(screen.getByLabelText("Actions for shop"), { key: "Enter" });
+    expect(await screen.findByRole("menuitem", { name: /Unlink/ })).toBeInTheDocument();
   });
 
   it("isolates a site when a PHP version is picked", async () => {
     mockDaemon();
     renderApp();
     const select = await screen.findByLabelText("PHP version for blog");
-    await waitFor(() =>
-      expect(screen.getAllByRole("option", { name: "8.2" }).length).toBeGreaterThan(0),
-    );
-    fireEvent.change(select, { target: { value: "8.2" } });
+    await waitFor(() => expect(api).toHaveBeenCalledWith("GET", "/v1/php"));
+    await pick(select, "PHP 8.2");
     await waitFor(() =>
       expect(api).toHaveBeenCalledWith("PUT", "/v1/sites/blog/php", { version: "8.2" }),
     );
@@ -425,12 +482,62 @@ describe("App", () => {
     expect(await screen.findByText("red helper:install")).toBeInTheDocument();
   });
 
+  it("fixes doctor checks it can fix itself", async () => {
+    mockDaemon();
+    renderApp();
+    fireEvent.click(await screen.findByText("Status"));
+    fireEvent.click(await screen.findByRole("button", { name: "Fix" }));
+    await waitFor(() => expect(api).toHaveBeenCalledWith("POST", "/v1/dns"));
+  });
+
+  it("shows queries grouped by request, with repeats", async () => {
+    mockDaemon();
+    renderApp();
+    fireEvent.click(await screen.findByText("Queries"));
+    expect(await screen.findByText("GET /users")).toBeInTheDocument();
+    expect(screen.getByText("select * from users where id = 1")).toBeInTheDocument();
+    expect(screen.getByText("1 repeated")).toBeInTheDocument();
+    expect(screen.getAllByText("×2")).toHaveLength(2);
+    expect(screen.getByText("app/Http/Controllers/UserController.php:11")).toBeInTheDocument();
+    expect(screen.getByText("150.00 ms")).toBeInTheDocument();
+  });
+
+  it("creates and backs up databases", async () => {
+    mockDaemon();
+    renderApp();
+    fireEvent.click(await screen.findByText("Databases"));
+    expect(await screen.findByText("shop")).toBeInTheDocument();
+    expect(screen.getByText("2.0 KB")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("New database name"), { target: { value: "blog" } });
+    fireEvent.click(screen.getByRole("button", { name: /Create database/ }));
+    await waitFor(() =>
+      expect(api).toHaveBeenCalledWith("POST", "/v1/services/mysql/databases", { name: "blog" }),
+    );
+    fireEvent.keyDown(screen.getByLabelText("Actions for shop"), { key: "Enter" });
+    fireEvent.keyDown(await screen.findByRole("menuitem", { name: /Back up/ }), { key: "Enter" });
+    await waitFor(() =>
+      expect(api).toHaveBeenCalledWith("POST", "/v1/services/mysql/databases/shop/backup"),
+    );
+  });
+
+  it("shares a site through Cloudflare Tunnel", async () => {
+    mockDaemon();
+    renderApp();
+    fireEvent.keyDown(await screen.findByLabelText("Actions for blog"), { key: "Enter" });
+    fireEvent.keyDown(await screen.findByRole("menuitem", { name: /Share publicly/ }), {
+      key: "Enter",
+    });
+    expect(await screen.findByText("Share blog on the internet")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Share" }));
+    await waitFor(() => expect(api).toHaveBeenCalledWith("POST", "/v1/shares/blog", {}));
+  });
+
   it("shows failed services and adds a new one", async () => {
     mockDaemon();
     renderApp();
     fireEvent.click(await screen.findByText("Services"));
     expect(await screen.findByText(/port 3306 is already in use/)).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("Server"), { target: { value: "0" } });
+    await pick(screen.getByLabelText("Server"), "postgresql 17.2");
     fireEvent.change(screen.getByLabelText("Port"), { target: { value: "5433" } });
     fireEvent.click(screen.getByText("Add service"));
     await waitFor(() =>
@@ -452,7 +559,7 @@ describe("App", () => {
     fireEvent.click(await screen.findByText("Welcome aboard"));
     expect(await screen.findByText("From Blog <app@blog.test>")).toBeInTheDocument();
     expect(screen.getByText("invoice.pdf · 2 KB")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("tab", { name: "text" }));
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Text" }));
     expect(screen.getByText("Hello there")).toBeInTheDocument();
   });
 
@@ -472,7 +579,7 @@ describe("App", () => {
     renderApp();
     fireEvent.click(await screen.findByText("Logs"));
     expect(await screen.findByText("Boom")).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("Level"), { target: { value: "info" } });
+    await pick(screen.getByLabelText("Level"), "info");
     expect(screen.queryByText("Boom")).not.toBeInTheDocument();
     expect(screen.getByText("All good")).toBeInTheDocument();
   });

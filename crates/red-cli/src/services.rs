@@ -92,11 +92,16 @@ pub(crate) struct AddArgs<'a> {
 }
 
 pub(crate) async fn add(ctx: &Ctx<'_>, args: AddArgs<'_>) -> anyhow::Result<()> {
+    // `mariadb` and `valkey` pick that flavor (and name the service after it).
+    let flavor = match args.kind.trim().to_ascii_lowercase().as_str() {
+        f @ ("mariadb" | "valkey") => Some(f.to_owned()),
+        _ => None,
+    };
     let request = ServiceRequest {
         kind: parse_kind(args.kind)?,
-        name: args.name,
+        name: args.name.or_else(|| flavor.clone()),
         port: args.port,
-        version: args.version,
+        version: args.version.or(flavor),
         binary: args.binary,
         autostart: Some(args.autostart),
     };
@@ -196,4 +201,57 @@ fn print_started(s: &ServiceInfo) {
     for var in &s.env {
         println!("  {}={}", var.name, var.value);
     }
+}
+
+pub(crate) struct SetArgs {
+    pub port: Option<u16>,
+    pub version: Option<String>,
+    pub binary: Option<String>,
+    pub autostart: Option<bool>,
+}
+
+/// `red services:set`: change a service's port, server version or autostart.
+pub(crate) async fn set(ctx: &Ctx<'_>, name: &str, args: SetArgs) -> anyhow::Result<()> {
+    if args.port.is_none()
+        && args.version.is_none()
+        && args.binary.is_none()
+        && args.autostart.is_none()
+    {
+        anyhow::bail!("nothing to change; pass --port, --server-version, --binary or --autostart");
+    }
+    let port_changed = args.port.is_some();
+    let update = red_api::ServiceUpdate {
+        port: args.port,
+        version: args.version,
+        binary: args.binary,
+        autostart: args.autostart,
+    };
+    let service: ServiceInfo = ctx
+        .send(Method::PUT, &endpoints::service(name), Some(&update))
+        .await?;
+    let service = if service.status == red_api::ServiceStatus::Stopped {
+        service
+    } else {
+        wait_until_settled(ctx, service).await?
+    };
+    ctx.output(&service, |s| {
+        println!(
+            "{}: {} {} on port {}{}.",
+            s.name,
+            s.flavor.as_deref().unwrap_or(kind_name(s.kind)),
+            s.version.as_deref().unwrap_or("?"),
+            s.port,
+            if s.autostart {
+                ", starts with redd"
+            } else {
+                ""
+            }
+        );
+        if port_changed {
+            println!(
+                "Update the port in your projects' .env (see `red services:env {}`).",
+                s.name
+            );
+        }
+    })
 }

@@ -87,7 +87,7 @@ describe("NewProject", () => {
     fireEvent.click(await screen.findByText("WordPress"));
     fireEvent.change(screen.getByLabelText("Project name"), { target: { value: "Shop" } });
     expect(await screen.findByText("/Users/me/Sites")).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByLabelText("Database")).toHaveValue("mysql"));
+    await waitFor(() => expect(screen.getByLabelText("Database")).toHaveTextContent("mysql"));
     fireEvent.click(screen.getByRole("button", { name: "Create" }));
     await waitFor(() =>
       expect(api).toHaveBeenCalledWith("POST", "/v1/projects", {

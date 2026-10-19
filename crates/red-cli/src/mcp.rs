@@ -292,6 +292,70 @@ impl Server {
                 Ok(json!({ "project": job }))
             }
             "list_projects" => Ok(json!({ "projects": self.get(endpoints::PROJECTS).await? })),
+            "list_queries" => {
+                let after = args.get("after_id").and_then(Value::as_u64).unwrap_or(0);
+                let mut response = self.get(endpoints::QUERIES).await?;
+                if let Some(list) = response.get_mut("queries").and_then(Value::as_array_mut) {
+                    list.retain(|q| q.get("id").and_then(Value::as_u64).unwrap_or(0) > after);
+                }
+                Ok(response)
+            }
+            "set_query_capture" => {
+                let enabled = args
+                    .get("enabled")
+                    .and_then(Value::as_bool)
+                    .ok_or_else(|| ToolError::Input("`enabled` must be true or false".into()))?;
+                self.send(
+                    Method::PUT,
+                    endpoints::QUERY_SETTINGS,
+                    Some(json!({ "enabled": enabled })),
+                )
+                .await
+            }
+            "list_databases" => {
+                let service = required(args, "service")?;
+                self.get(&endpoints::databases(&encode(service))).await
+            }
+            "create_database" => {
+                let service = required(args, "service")?;
+                let name = required(args, "name")?;
+                self.send(
+                    Method::POST,
+                    &endpoints::databases(&encode(service)),
+                    Some(json!({ "name": name })),
+                )
+                .await
+            }
+            "backup_database" => {
+                let service = required(args, "service")?;
+                let name = required(args, "name")?;
+                let backup = self
+                    .send(
+                        Method::POST,
+                        &endpoints::database_action(&encode(service), &encode(name), "backup"),
+                        None,
+                    )
+                    .await?;
+                Ok(json!({ "backup": backup }))
+            }
+            "list_shares" => self.get(endpoints::SHARES).await,
+            "share_site" => {
+                let site = required(args, "site")?;
+                let mut body = json!({});
+                if let Some(host) = optional(args, "hostname")? {
+                    body["hostname"] = json!(host);
+                }
+                let share = self
+                    .send(Method::POST, &endpoints::share(&encode(site)), Some(body))
+                    .await?;
+                Ok(json!({ "share": share }))
+            }
+            "stop_share" => {
+                let site = required(args, "site")?;
+                self.send(Method::DELETE, &endpoints::share(&encode(site)), None)
+                    .await?;
+                Ok(json!({ "stopped": site }))
+            }
             "list_runtimes" => self.get(endpoints::RUNTIMES).await,
             "list_proxies" => Ok(json!({ "proxies": self.get(endpoints::PROXIES).await? })),
             _ => unreachable!("checked against TOOLS"),
@@ -676,6 +740,104 @@ const TOOLS: &[Tool] = &[
         enums: &[],
     },
     Tool {
+        name: "list_queries",
+        title: "List database queries",
+        description: "SQL queries Laravel sites ran (while query capture is on), with bindings filled in, time in ms, the request and the app file and line that ran them. Use after_id to see only new ones.",
+        effect: Effect::Read,
+        params: &[(
+            "after_id",
+            "integer",
+            "Only queries with a higher id.",
+            false,
+        )],
+        enums: &[],
+    },
+    Tool {
+        name: "set_query_capture",
+        title: "Turn query capture on or off",
+        description: "Have Laravel sites report their database queries to RED (no package needed), or stop.",
+        effect: Effect::Change,
+        params: &[(
+            "enabled",
+            "boolean",
+            "true to capture, false to stop.",
+            true,
+        )],
+        enums: &[],
+    },
+    Tool {
+        name: "list_databases",
+        title: "List databases",
+        description: "Databases in a MySQL, MariaDB or PostgreSQL service, with sizes and the backups RED made.",
+        effect: Effect::Read,
+        params: &[(
+            "service",
+            "string",
+            "Service name from list_services.",
+            true,
+        )],
+        enums: &[],
+    },
+    Tool {
+        name: "create_database",
+        title: "Create a database",
+        description: "Create a database in a MySQL, MariaDB or PostgreSQL service (does nothing if it exists).",
+        effect: Effect::Change,
+        params: &[
+            ("service", "string", "Service name.", true),
+            (
+                "name",
+                "string",
+                "Database name: letters, digits, '_' and '-'.",
+                true,
+            ),
+        ],
+        enums: &[],
+    },
+    Tool {
+        name: "backup_database",
+        title: "Back up a database",
+        description: "Dump a database to a .sql.gz file in RED's data directory and return its path.",
+        effect: Effect::Change,
+        params: &[
+            ("service", "string", "Service name.", true),
+            ("name", "string", "Database name.", true),
+        ],
+        enums: &[],
+    },
+    Tool {
+        name: "list_shares",
+        title: "List shared sites",
+        description: "Sites shared on the internet through Cloudflare Tunnel, with their public URLs.",
+        effect: Effect::Read,
+        params: &[],
+        enums: &[],
+    },
+    Tool {
+        name: "share_site",
+        title: "Share a site on the internet",
+        description: "Make a site reachable from the internet through Cloudflare Tunnel: a one-off https://*.trycloudflare.com URL, or a hostname on the user's Cloudflare account. Anyone with the URL can open it, so only do this when the user asks. Runs in the background; follow with list_shares.",
+        effect: Effect::Change,
+        params: &[
+            ("site", "string", "Site name.", true),
+            (
+                "hostname",
+                "string",
+                "Hostname on the user's Cloudflare account (needs `red share:login` once).",
+                false,
+            ),
+        ],
+        enums: &[],
+    },
+    Tool {
+        name: "stop_share",
+        title: "Stop sharing a site",
+        description: "Take a shared site off the internet.",
+        effect: Effect::Change,
+        params: &[("site", "string", "Site name.", true)],
+        enums: &[],
+    },
+    Tool {
         name: "list_runtimes",
         title: "List runtimes",
         description: "PHP, Node and service runtimes RED can install, which are installed, and available updates.",
@@ -731,7 +893,7 @@ fn tool_json(tool: &Tool) -> Value {
             "readOnlyHint": tool.effect == Effect::Read,
             "destructiveHint": tool.effect == Effect::Delete,
             "idempotentHint": true,
-            "openWorldHint": false,
+            "openWorldHint": tool.name == "share_site",
         },
     })
 }

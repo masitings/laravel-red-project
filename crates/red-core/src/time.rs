@@ -1,6 +1,13 @@
 //! Tiny date helpers, enough to show certificate expiry dates without
 //! pulling in a date library.
 
+/// Seconds since the Unix epoch.
+pub fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
 /// Format a Unix timestamp as a UTC calendar date, `YYYY-MM-DD`.
 pub fn date_from_unix(secs: u64) -> String {
     let days = (secs / 86_400) as i64;

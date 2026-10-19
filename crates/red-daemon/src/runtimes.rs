@@ -16,8 +16,8 @@ use std::time::{Duration, Instant};
 use futures_util::StreamExt;
 use red_api::{Event, JobState, RuntimeInfo, RuntimeJob, RuntimeRelease};
 use red_core::runtimes::{
-    self, Artifact, ComposerVersions, Format, Layout, ListingEntry, MARKER_FILE, Manifest, Marker,
-    NodeEntry, Platform, Release, RuntimeKind,
+    self, Artifact, ComposerVersions, Format, GithubRelease, Layout, ListingEntry, MARKER_FILE,
+    Manifest, MariadbLatest, Marker, NodeEntry, Platform, Release, RuntimeKind,
 };
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
@@ -43,7 +43,14 @@ struct Catalog {
     postgres: Vec<String>,
     node: Vec<NodeEntry>,
     composer: ComposerVersions,
+    bun: Option<GithubRelease>,
+    cloudflared: Option<GithubRelease>,
+    /// Official MariaDB releases by series (Linux x86-64 only).
+    mariadb: Vec<(String, MariadbLatest)>,
     errors: Vec<String>,
+    /// Failures of the smaller catalogs (GitHub's API is rate limited);
+    /// reported, but they do not make RED fetch everything again.
+    minor_errors: Vec<String>,
 }
 
 /// Owns runtime downloads.
@@ -68,6 +75,9 @@ pub(crate) fn api_kind(kind: RuntimeKind) -> red_api::RuntimeKind {
         RuntimeKind::Valkey => red_api::RuntimeKind::Valkey,
         RuntimeKind::Node => red_api::RuntimeKind::Node,
         RuntimeKind::Composer => red_api::RuntimeKind::Composer,
+        RuntimeKind::Mariadb => red_api::RuntimeKind::Mariadb,
+        RuntimeKind::Bun => red_api::RuntimeKind::Bun,
+        RuntimeKind::Cloudflared => red_api::RuntimeKind::Cloudflared,
     }
 }
 
@@ -79,6 +89,9 @@ pub(crate) fn core_kind(kind: red_api::RuntimeKind) -> RuntimeKind {
         red_api::RuntimeKind::Valkey => RuntimeKind::Valkey,
         red_api::RuntimeKind::Node => RuntimeKind::Node,
         red_api::RuntimeKind::Composer => RuntimeKind::Composer,
+        red_api::RuntimeKind::Mariadb => RuntimeKind::Mariadb,
+        red_api::RuntimeKind::Bun => RuntimeKind::Bun,
+        red_api::RuntimeKind::Cloudflared => RuntimeKind::Cloudflared,
     }
 }
 
@@ -223,13 +236,58 @@ impl RuntimeManager {
                         None => None,
                     }
                 };
-                let (manifest, php, pg, node, composer) = tokio::join!(
+                let mariadb = async {
+                    // mariadb.org has binaries for Linux x86-64 only.
+                    if platform.os != runtimes::Os::Linux || platform.arch != runtimes::Arch::X86_64
+                    {
+                        return Ok(Vec::new());
+                    }
+                    let body = text(runtimes::MARIADB_MAJORS_URL.to_owned())
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    let majors: runtimes::MariadbMajors =
+                        serde_json::from_str(&body).map_err(|e| e.to_string())?;
+                    let wanted = runtimes::mariadb_lts_majors(&majors);
+                    let fetched = futures_util::future::join_all(
+                        wanted.iter().map(|m| text(runtimes::mariadb_latest_url(m))),
+                    )
+                    .await;
+                    let mut found = Vec::new();
+                    for (major, body) in wanted.into_iter().zip(fetched) {
+                        if let Ok(latest) =
+                            serde_json::from_str::<MariadbLatest>(&body.map_err(|e| e.to_string())?)
+                        {
+                            found.push((major, latest));
+                        }
+                    }
+                    Ok::<_, String>(found)
+                };
+                let (manifest, php, pg, node, composer, bun, cloudflared, mariadb) = tokio::join!(
                     manifest,
                     text(runtimes::PHP_LISTING_URL.to_owned()),
                     text(runtimes::pg_metadata_url(platform)),
                     text(runtimes::NODE_INDEX_URL.to_owned()),
                     text(runtimes::COMPOSER_VERSIONS_URL.to_owned()),
+                    text(runtimes::BUN_RELEASE_URL.to_owned()),
+                    text(runtimes::CLOUDFLARED_RELEASE_URL.to_owned()),
+                    mariadb,
                 );
+                for (name, body, slot) in [
+                    ("Bun", bun, &mut catalog.bun),
+                    ("cloudflared", cloudflared, &mut catalog.cloudflared),
+                ] {
+                    match body.map(|text| serde_json::from_str::<GithubRelease>(&text)) {
+                        Ok(Ok(release)) => *slot = Some(release),
+                        Ok(Err(err)) => catalog
+                            .minor_errors
+                            .push(format!("{name}: unexpected release: {err}")),
+                        Err(err) => catalog.minor_errors.push(format!("{name}: {err}")),
+                    }
+                }
+                match mariadb {
+                    Ok(found) => catalog.mariadb = found,
+                    Err(err) => catalog.minor_errors.push(format!("MariaDB: {err}")),
+                }
                 match manifest {
                     None => {}
                     // Not published yet (404) is normal; RED falls back to
@@ -311,7 +369,35 @@ impl RuntimeManager {
         if let Some(release) = runtimes::composer_release(&catalog.composer, "") {
             push(RuntimeKind::Composer, release.line, release.version);
         }
-        (releases, catalog.errors)
+        let mut mariadb = catalog.manifest.lines(RuntimeKind::Mariadb, platform);
+        for (major, latest) in &catalog.mariadb {
+            if let Some(release) = runtimes::mariadb_official(latest, major, platform)
+                && !mariadb.iter().any(|(l, _)| *l == release.line)
+            {
+                mariadb.push((release.line, release.version));
+            }
+        }
+        mariadb.sort_by(|(a, _), (b, _)| compare(b, a));
+        for (line, version) in mariadb {
+            push(RuntimeKind::Mariadb, line, version);
+        }
+        if let Some(release) = catalog
+            .bun
+            .as_ref()
+            .and_then(|r| runtimes::bun_release(r, platform))
+        {
+            push(RuntimeKind::Bun, release.line, release.version);
+        }
+        if let Some(release) = catalog
+            .cloudflared
+            .as_ref()
+            .and_then(|r| runtimes::cloudflared_release(r, platform))
+        {
+            push(RuntimeKind::Cloudflared, release.line, release.version);
+        }
+        let mut errors = catalog.errors;
+        errors.extend(catalog.minor_errors);
+        (releases, errors)
     }
 
     async fn resolve(&self, kind: RuntimeKind, wanted: &str) -> Result<Release, String> {
@@ -330,6 +416,30 @@ impl RuntimeManager {
                 .release(RuntimeKind::Valkey, wanted, platform),
             RuntimeKind::Node => runtimes::node_release(&catalog.node, wanted, platform),
             RuntimeKind::Composer => runtimes::composer_release(&catalog.composer, wanted),
+            RuntimeKind::Mariadb => catalog
+                .manifest
+                .release(RuntimeKind::Mariadb, wanted, platform)
+                .or_else(|| {
+                    catalog
+                        .mariadb
+                        .iter()
+                        .filter_map(|(major, latest)| {
+                            runtimes::mariadb_official(latest, major, platform)
+                        })
+                        .find(|r| {
+                            wanted.trim().is_empty()
+                                || r.line == wanted.trim()
+                                || runtimes::version_matches(&r.version, wanted)
+                        })
+                }),
+            RuntimeKind::Bun => catalog
+                .bun
+                .as_ref()
+                .and_then(|r| runtimes::bun_release(r, platform)),
+            RuntimeKind::Cloudflared => catalog
+                .cloudflared
+                .as_ref()
+                .and_then(|r| runtimes::cloudflared_release(r, platform)),
         };
         release.ok_or_else(|| {
             let mut message = if wanted.is_empty() {
@@ -483,11 +593,12 @@ async fn after_install(app: &AppState, release: &Release) {
             app.php.restart(&release.line).await;
             app.php.discover().await;
         }
-        RuntimeKind::Mysql | RuntimeKind::Postgres | RuntimeKind::Valkey => {
+        RuntimeKind::Mysql | RuntimeKind::Postgres | RuntimeKind::Valkey | RuntimeKind::Mariadb => {
             app.services.discover().await;
             let _ = app.events.send(Event::ServicesChanged);
         }
-        RuntimeKind::Node | RuntimeKind::Composer => {}
+        RuntimeKind::Node | RuntimeKind::Composer | RuntimeKind::Bun | RuntimeKind::Cloudflared => {
+        }
     }
 }
 
@@ -710,6 +821,23 @@ pub fn unpack(file: &Path, format: Format, layout: &Layout, dest: &Path) -> Resu
             layout,
             dest,
         ),
+        Format::Zip => {
+            let Layout::Single { to } = layout else {
+                return Err("only single files are taken from zip archives".into());
+            };
+            let mut zip = zip::ZipArchive::new(open()?).map_err(|e| format!("bad archive: {e}"))?;
+            let index = (0..zip.len())
+                .find(|&i| zip.by_index(i).is_ok_and(|e| e.is_file()))
+                .ok_or("the archive is empty")?;
+            let mut entry = zip.by_index(index).map_err(|e| e.to_string())?;
+            let target = dest.join(to);
+            if let Some(dir) = target.parent() {
+                std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+            }
+            let mut out = std::fs::File::create(&target).map_err(|e| e.to_string())?;
+            std::io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
+            set_executable(&target)
+        }
         Format::JarTxz => {
             let mut zip = zip::ZipArchive::new(open()?).map_err(|e| format!("bad archive: {e}"))?;
             let mut index = None;
@@ -801,6 +929,9 @@ fn finish(staging: &Path, release: &Release) -> Result<(), String> {
         RuntimeKind::Valkey => staging.join("bin/valkey-server"),
         RuntimeKind::Node => staging.join("bin/node"),
         RuntimeKind::Composer => staging.join("bin/composer.phar"),
+        RuntimeKind::Mariadb => staging.join("bin/mariadbd"),
+        RuntimeKind::Bun => staging.join("bin/bun"),
+        RuntimeKind::Cloudflared => staging.join("bin/cloudflared"),
     };
     if !binary.is_file() {
         return Err(format!("{} is missing from the download", binary.display()));

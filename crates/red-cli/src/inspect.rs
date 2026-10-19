@@ -3,7 +3,7 @@
 use red_api::client::Method;
 use red_api::{
     DumpEntry, DumpSettings, DumpsResponse, LogEntry, LogFile, LogResponse, MailMessage,
-    MailSummary, endpoints,
+    MailSummary, QueriesResponse, QueryEntry, QuerySettings, endpoints,
 };
 
 use crate::{Ctx, print_table};
@@ -156,6 +156,96 @@ pub(crate) async fn dumps_clear(ctx: &Ctx<'_>) -> anyhow::Result<()> {
         .await?;
     ctx.output(&serde_json::json!({ "cleared": true }), |_| {
         println!("Cleared the captured dumps.");
+    })
+}
+
+// ---- queries ---------------------------------------------------------------------
+
+pub(crate) async fn queries(ctx: &Ctx<'_>, follow: bool) -> anyhow::Result<()> {
+    let response: QueriesResponse = ctx.client.get(endpoints::QUERIES).await?;
+    if ctx.cli.json && !follow {
+        println!("{}", serde_json::to_string_pretty(&response)?);
+        return Ok(());
+    }
+    if !response.enabled {
+        eprintln!("Query capture is off; turn it on with `red queries:on`.");
+    }
+    let mut last = 0;
+    let mut request = None;
+    for query in &response.queries {
+        print_query(ctx, query, &mut request);
+        last = query.id;
+    }
+    if response.queries.is_empty() && response.enabled && !follow {
+        println!("No queries yet. Open a page of a Laravel site and they show up here.");
+    }
+    if !follow {
+        return Ok(());
+    }
+    loop {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let response: QueriesResponse = ctx.client.get(endpoints::QUERIES).await?;
+        let since = last;
+        for query in response.queries.iter().filter(|q| q.id > since) {
+            print_query(ctx, query, &mut request);
+            last = query.id;
+        }
+    }
+}
+
+fn print_query(ctx: &Ctx<'_>, query: &QueryEntry, request: &mut Option<String>) {
+    if ctx.cli.json {
+        println!("{}", serde_json::to_string(query).unwrap_or_default());
+        return;
+    }
+    if query.request_id != *request {
+        *request = query.request_id.clone();
+        println!(
+            "\n── {} {}",
+            red_core::time::datetime_from_unix(query.received / 1000),
+            query.request.as_deref().unwrap_or("")
+        );
+    }
+    let place = match (&query.file, query.line) {
+        (Some(file), Some(line)) => format!("  {}:{line}", short_path(file)),
+        (Some(file), None) => format!("  {}", short_path(file)),
+        _ => String::new(),
+    };
+    println!("{:>8.2} ms  {}{place}", query.time_ms, query.bound);
+}
+
+/// The part of a path from `app/`, `routes/`, ... on, when there is one.
+fn short_path(path: &str) -> &str {
+    ["/app/", "/routes/", "/database/", "/resources/", "/config/"]
+        .iter()
+        .filter_map(|dir| path.find(dir).map(|at| &path[at + 1..]))
+        .next()
+        .unwrap_or(path)
+}
+
+pub(crate) async fn queries_set(ctx: &Ctx<'_>, enabled: bool) -> anyhow::Result<()> {
+    let response: QueriesResponse = ctx
+        .send(
+            Method::PUT,
+            endpoints::QUERY_SETTINGS,
+            Some(&QuerySettings { enabled }),
+        )
+        .await?;
+    ctx.output(&response, |r| {
+        if r.enabled {
+            println!("Laravel sites now report their database queries to RED (`red queries`).");
+        } else {
+            println!("Query capture is off.");
+        }
+    })
+}
+
+pub(crate) async fn queries_clear(ctx: &Ctx<'_>) -> anyhow::Result<()> {
+    let _: serde_json::Value = ctx
+        .send(Method::DELETE, endpoints::QUERIES, None::<&()>)
+        .await?;
+    ctx.output(&serde_json::json!({ "cleared": true }), |_| {
+        println!("Cleared the captured queries.");
     })
 }
 
@@ -320,6 +410,15 @@ mod tests {
             html_to_text("<h1>Reset</h1><p>Click <a href=x>here</a></p>"),
             "Reset\nClick here"
         );
+    }
+
+    #[test]
+    fn shortens_app_paths() {
+        assert_eq!(
+            short_path("/Users/me/Sites/shop/app/Http/Controllers/A.php"),
+            "app/Http/Controllers/A.php"
+        );
+        assert_eq!(short_path("/x/y.php"), "/x/y.php");
     }
 
     #[test]

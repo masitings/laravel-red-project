@@ -39,6 +39,13 @@ export function useDaemonEvents() {
           client.invalidateQueries({ queryKey: keys.php });
           client.invalidateQueries({ queryKey: keys.services });
           break;
+        case "shares_changed":
+          client.invalidateQueries({ queryKey: keys.shares });
+          break;
+        case "query_received":
+        case "queries_changed":
+          client.invalidateQueries({ queryKey: keys.queries });
+          break;
         case "projects_changed":
           client.invalidateQueries({ queryKey: keys.projects });
           break;

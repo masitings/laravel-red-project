@@ -241,6 +241,14 @@ async fn update(
         config.port = port;
         restart = true;
     }
+    if body.version.is_some() || body.binary.is_some() {
+        let (binary, version) = switch_server(&app, &name, &config, &body).await?;
+        if binary != config.binary {
+            config.binary = binary;
+            config.version = Some(version);
+            restart = true;
+        }
+    }
     if let Some(autostart) = body.autostart {
         config.autostart = autostart;
     }
@@ -253,6 +261,105 @@ async fn update(
     }
     app.notify(red_api::Event::ServicesChanged);
     Ok(Json(service_info(&app, &name, &config)))
+}
+
+/// The server a service should switch to, checked against what it runs
+/// now: same flavor (MySQL data does not move to MariaDB), not older, and
+/// for PostgreSQL the same major version.
+async fn switch_server(
+    app: &AppState,
+    name: &str,
+    config: &ServiceConfig,
+    body: &ServiceUpdate,
+) -> Result<(PathBuf, String), ApiResponse> {
+    let current = crate::services::probe(config.kind, &config.binary).await;
+    let target = match &body.binary {
+        Some(binary) => {
+            let binary = PathBuf::from(binary);
+            let found = crate::services::probe(config.kind, &binary)
+                .await
+                .ok_or_else(|| {
+                    bad_request(format!(
+                        "{} is not a {} server",
+                        binary.display(),
+                        config.kind
+                    ))
+                })?;
+            (binary, found)
+        }
+        None => {
+            let wanted = body
+                .version
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .to_owned();
+            let installs = app.services.discover().await;
+            let install = installs
+                .iter()
+                .filter(|i| i.server.kind == config.kind)
+                .filter(|i| {
+                    current
+                        .as_ref()
+                        .is_none_or(|c| same_family(config.kind, &c.flavor, &i.server.flavor))
+                })
+                .find(|i| {
+                    i.server.full_version == wanted
+                        || i.server.full_version.starts_with(&format!("{wanted}."))
+                        || i.server.version == wanted
+                })
+                .ok_or_else(|| missing_server(config.kind, Some(&wanted), &installs))?;
+            (install.binary.clone(), install.server.clone())
+        }
+    };
+    let (binary, server) = target;
+    if let Some(current) = &current {
+        if !same_family(config.kind, &current.flavor, &server.flavor) {
+            return Err(bad_request(format!(
+                "{name} runs {}; its data cannot move to {}",
+                current.flavor, server.flavor
+            ))
+            .with_hint(
+                "add a new service and copy the data with `red db:backup` / `red db:restore`",
+            )
+            .into());
+        }
+        if config.kind == ServiceKind::Postgres && major(&current.version) != major(&server.version)
+        {
+            return Err(bad_request(format!(
+                "PostgreSQL {} data cannot be opened by PostgreSQL {}",
+                major(&current.version),
+                major(&server.version)
+            ))
+            .with_hint("add a service for the new version and move the data with `red db:backup` / `red db:restore`")
+            .into());
+        }
+        if current.flavor == server.flavor
+            && version_less(&server.full_version, &current.full_version)
+        {
+            return Err(bad_request(format!(
+                "{name} runs {} {}; going back to {} can damage its data",
+                current.flavor, current.full_version, server.full_version
+            ))
+            .into());
+        }
+    }
+    Ok((binary, server.version))
+}
+
+/// Whether data written by one flavor opens in the other: Redis and Valkey
+/// share a format, MySQL and MariaDB do not.
+fn same_family(kind: ServiceKind, a: &str, b: &str) -> bool {
+    kind == ServiceKind::Redis || a == b
+}
+
+fn major(version: &str) -> &str {
+    version.split('.').next().unwrap_or(version)
+}
+
+fn version_less(a: &str, b: &str) -> bool {
+    let parts = |v: &str| -> Vec<u64> { v.split('.').map(|p| p.parse().unwrap_or(0)).collect() };
+    parts(a) < parts(b)
 }
 
 #[derive(Debug, Deserialize)]
@@ -314,4 +421,20 @@ fn config_of(app: &AppState, name: &str) -> Result<ServiceConfig, ApiResponse> {
                 .with_hint("list services with `red services`")
                 .into()
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compares_server_versions() {
+        assert!(version_less("8.0.36", "8.4.0"));
+        assert!(!version_less("8.4.0", "8.4.0"));
+        assert!(!version_less("16.10", "16.4"));
+        assert_eq!(major("16.4"), "16");
+        assert!(same_family(ServiceKind::Redis, "redis", "valkey"));
+        assert!(!same_family(ServiceKind::Mysql, "mysql", "mariadb"));
+        assert!(same_family(ServiceKind::Mysql, "mariadb", "mariadb"));
+    }
 }
