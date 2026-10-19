@@ -6,6 +6,12 @@ All notable changes to RED Project. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-19
+
+Self-contained runtimes and updates: RED downloads PHP, databases, Node.js
+and Composer itself, keeps them up to date, and the release pipeline can
+sign, notarize and publish to Homebrew.
+
 ### Runtimes
 - RED downloads and manages PHP, MySQL, PostgreSQL, Valkey, Node.js and
   Composer itself, no Homebrew needed: `red php:install [8.4]`,
@@ -63,6 +69,13 @@ All notable changes to RED Project. The format follows
   updater key is configured, and updates a Homebrew tap (formula for the
   command-line tools, cask for the app) when a tap token is configured.
   See `docs/releasing.md`.
+
+### Other
+- `red restart` restarts redd through its login agent (after installing a
+  new version, for example).
+- When port 80 or 443 is taken (Herd, Valet, another server), redd serves
+  on 8080/8443 instead of not serving at all, and `red doctor` names what
+  holds the port and whether `/etc/resolver/test` belongs to another tool.
 
 ### Fixed
 - MySQL services accept `root` from 127.0.0.1 (MySQL's root account is

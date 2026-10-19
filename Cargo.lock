@@ -3299,7 +3299,7 @@ dependencies = [
 
 [[package]]
 name = "red-api"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "http-body-util",
  "hyper",
@@ -3313,7 +3313,7 @@ dependencies = [
 
 [[package]]
 name = "red-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -3327,7 +3327,7 @@ dependencies = [
 
 [[package]]
 name = "red-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "percent-encoding",
  "serde",
@@ -3339,7 +3339,7 @@ dependencies = [
 
 [[package]]
 name = "red-daemon"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -3381,7 +3381,7 @@ dependencies = [
 
 [[package]]
 name = "red-gui"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "red-api",
  "red-platform",
@@ -3399,7 +3399,7 @@ dependencies = [
 
 [[package]]
 name = "red-helper"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "clap",
  "rustix",
@@ -3412,7 +3412,7 @@ dependencies = [
 
 [[package]]
 name = "red-platform"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "directories",
  "rustix",

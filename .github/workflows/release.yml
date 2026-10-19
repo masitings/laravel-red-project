@@ -12,6 +12,9 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # Dry run from the Actions tab: builds everything and keeps the files as
+  # workflow artifacts, but publishes nothing.
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -138,12 +141,17 @@ jobs:
       - name: Build RED.app and the disk image
         working-directory: apps/gui
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          SIGNING_KEY_SECRET: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          SIGNING_KEY_PASSWORD_SECRET: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           APPLE_ID_SECRET: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD_SECRET: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID_SECRET: ${{ secrets.APPLE_TEAM_ID }}
         run: |
+          # Tauri reacts to these being set at all, so only set non-empty ones.
+          if [ -n "$SIGNING_KEY_SECRET" ]; then
+            export TAURI_SIGNING_PRIVATE_KEY="$SIGNING_KEY_SECRET"
+            export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$SIGNING_KEY_PASSWORD_SECRET"
+          fi
           # Tauri notarizes when these are set; only set them when all are there.
           if [ -n "${APPLE_SIGNING_IDENTITY:-}" ] && [ -n "$APPLE_ID_SECRET" ] \
              && [ -n "$APPLE_PASSWORD_SECRET" ] && [ -n "$APPLE_TEAM_ID_SECRET" ]; then
@@ -175,6 +183,7 @@ jobs:
   release:
     name: Publish release
     needs: [build, app]
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
