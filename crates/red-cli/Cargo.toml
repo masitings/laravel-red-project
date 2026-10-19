@@ -17,11 +17,12 @@ red-platform.workspace = true
 red-core.workspace = true
 red-helper.workspace = true
 
-tokio.workspace = true
+tokio = { workspace = true, features = ["io-std"] }
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

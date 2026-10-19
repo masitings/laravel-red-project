@@ -166,6 +166,31 @@ red logs site:blog:storage/logs/laravel.log -f
 Point Laravel at the mail catcher with `MAIL_MAILER=smtp`, `MAIL_HOST=127.0.0.1`,
 `MAIL_PORT=2525`; the SMTP username becomes the mailbox, so apps stay apart.
 
+### AI agents (MCP)
+
+`red mcp` is a [Model Context Protocol](https://modelcontextprotocol.io)
+server on stdio, so coding agents can see what RED sees: sites, logs, caught
+mail, dumps, services, PHP and Xdebug. It talks to redd, so the app or the
+login service must be running.
+
+```sh
+claude mcp add red -- red mcp          # Claude Code
+```
+
+Cursor, Zed, VS Code and other clients take the same command in their MCP
+settings, for example in `.cursor/mcp.json`:
+
+```json
+{ "mcpServers": { "red": { "command": "red", "args": ["mcp"] } } }
+```
+
+Tools: `status`, `doctor`, `list_sites`, `site_for_path`, `link_site`,
+`secure_site`, `php_versions`, `set_xdebug`, `list_logs`, `read_log`,
+`list_mail`, `read_mail`, `clear_mail`, `list_dumps`, `clear_dumps`,
+`list_services`, `service_action`, `list_runtimes`, `list_proxies`. Each is
+marked read-only or not, so clients can ask before changes; nothing runs
+outside RED's own API.
+
 ### Per-project settings
 
 Commit a `red.toml` and everyone gets the same setup with `red init`:
@@ -275,7 +300,7 @@ Where RED keeps its files:
 | M1 MVP ✓ | Park/link, `.test` DNS, local HTTPS, multiple PHP versions, proxies with WebSocket, GUI for sites and PHP | v0.1.0 |
 | M2 Dev tools ✓ | MySQL/PostgreSQL/Valkey, mail catcher, dumps, log viewer, `red.toml`, Node per site, desktop app bundle | v0.2.0 |
 | M3 Distribution | Downloadable runtimes ✓, runtime and app updates ✓, signing/notarization and Homebrew tap in CI ✓, Linux DNS/trust/packages ✓ | Signed releases on both OSes |
-| M4 Advanced | On-demand Xdebug ✓, sharing/tunnels, profiler, MCP server, git workspaces | v1.0.0 |
+| M4 Advanced | On-demand Xdebug ✓, MCP server ✓, sharing/tunnels, profiler, git workspaces | v1.0.0 |
 
 ## Contributing
 

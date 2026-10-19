@@ -13,6 +13,7 @@ use serde::Serialize;
 
 mod inspect;
 mod install;
+mod mcp;
 mod project;
 mod runtimes;
 mod services;
@@ -294,6 +295,8 @@ enum Command {
     /// Clear captured dumps.
     #[command(name = "dumps:clear")]
     DumpsClear,
+    /// Serve RED to AI agents (Claude Code, Cursor, …) as an MCP server on stdio.
+    Mcp,
     /// List logs, or show one: RED, services, PHP-FPM and site logs.
     Logs {
         /// Log id from `red logs`.
@@ -767,6 +770,7 @@ async fn run(cli: &Cli) -> anyhow::Result<()> {
         }
         Command::ServicesEnv { name } => services::env(&ctx, name).await?,
         Command::Init => project::init(&ctx).await?,
+        Command::Mcp => mcp::serve(ctx.client.clone()).await?,
         Command::Xdebug => xdebug::status(&ctx).await?,
         Command::XdebugOn => xdebug::set(&ctx, red_api::XdebugMode::On).await?,
         Command::XdebugAuto => xdebug::set(&ctx, red_api::XdebugMode::Auto).await?,

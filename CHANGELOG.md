@@ -28,6 +28,19 @@ All notable changes to RED Project. The format follows
   rebuilt archive of the same version (such as PHP with Xdebug) is offered
   as an update ("new build").
 
+### MCP server
+- `red mcp` serves RED to AI coding agents (Claude Code, Cursor, Zed, …) as
+  a Model Context Protocol server on stdio (protocol 2025-11-25, and
+  2025-06-18, 2025-03-26 and 2024-11-05 for older clients). Its tools wrap
+  the Control API: status and doctor; sites (list, find the site for a
+  directory, link, secure); PHP versions and the Xdebug mode; logs; caught
+  mail (bodies as plain text); dumps (as text, `after_id` for new ones);
+  services (list, start, stop, restart); runtimes and proxies.
+- Tools carry read-only/destructive hints, return structured content plus a
+  text copy, and report a stopped redd as a tool error with how to start it.
+- Caught HTML mail and dumps read better as text: headings and list items
+  end a line.
+
 ## [0.3.0] - 2026-10-19
 
 Self-contained runtimes and updates: RED downloads PHP, databases, Node.js

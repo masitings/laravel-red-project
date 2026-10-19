@@ -236,7 +236,7 @@ fn human_size(bytes: u64) -> String {
 }
 
 /// Percent-encode a query value.
-fn encode(text: &str) -> String {
+pub(crate) fn encode(text: &str) -> String {
     text.bytes()
         .map(|b| match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b':' | b'/' => {
@@ -273,6 +273,8 @@ pub(crate) fn html_to_text(html: &str) -> String {
                 || tag.starts_with("</p")
                 || tag.starts_with("</div")
                 || tag.starts_with("</tr")
+                || tag.starts_with("</li")
+                || tag.starts_with("</h")
             {
                 text.push('\n');
             }
@@ -313,6 +315,10 @@ mod tests {
         assert_eq!(
             html_to_text("<p>Hi</p><p>there &amp; you</p>"),
             "Hi\nthere & you"
+        );
+        assert_eq!(
+            html_to_text("<h1>Reset</h1><p>Click <a href=x>here</a></p>"),
+            "Reset\nClick here"
         );
     }
 
