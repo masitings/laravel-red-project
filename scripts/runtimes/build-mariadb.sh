@@ -15,6 +15,11 @@ version=$1
 platform=$2
 out=$(mkdir -p "$3" && cd "$3" && pwd)
 work=${RUNNER_TEMP:-/tmp}/red-mariadb-$version-$platform
+# Installed under a prefix, then moved: with the prefix "/" CMake's install
+# script strips it to "" and newer CMake (Homebrew's on the macOS runners)
+# fails with "file INSTALL given no DESTINATION" for files that go to the
+# top of the tree. The STANDALONE layout is relocatable through --basedir.
+prefix=/opt/red-mariadb
 mkdir -p "$work"
 cd "$work"
 
@@ -48,7 +53,7 @@ done
 cmake -S src -B build \
   -DCMAKE_BUILD_TYPE=Release \
   -DINSTALL_LAYOUT=STANDALONE \
-  -DCMAKE_INSTALL_PREFIX=/ \
+  -DCMAKE_INSTALL_PREFIX="$prefix" \
   -DWITH_SSL=system \
   -DOPENSSL_USE_STATIC_LIBS=ON \
   ${openssl_root:+-DOPENSSL_ROOT_DIR="$openssl_root"} \
@@ -69,8 +74,9 @@ cmake -S src -B build \
 jobs=$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu)
 cmake --build build --parallel "$jobs"
 
-rm -rf rt
-DESTDIR="$work/rt" cmake --install build >/dev/null
+rm -rf rt stage
+DESTDIR="$work/stage" cmake --install build >/dev/null
+mv "stage$prefix" rt
 # Drop what a local server does not need.
 rm -rf rt/mysql-test rt/sql-bench rt/man rt/docs rt/include rt/lib/plugin/*.a rt/lib/*.a
 
